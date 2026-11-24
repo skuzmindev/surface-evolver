@@ -100,9 +100,11 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Runs once, after both platforms built, so `latest` is never left with
-  # a mix of old and new installers. Delete + recreate moves the `latest` tag
-  # to the tested commit; the download URLs stay the same.
+  # Runs once, after both platforms built. Updates `latest` in place rather
+  # than delete + recreate: a create that failed after the delete (a 403 on
+  # 2026-11-24) left no release at all until the next green push. Now every
+  # step that can fail runs while the old release is still whole, and the
+  # download URLs stay the same.
   publish:
     needs: build
     runs-on: ubuntu-26.04
@@ -122,12 +124,25 @@ jobs:
           SUBJECT: ${{ github.event.workflow_run.head_commit.message }}
         run: |
           set -euo pipefail
-          gh release delete latest --cleanup-tag --yes || true
-          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/latest" 2>/dev/null || true  # orphaned tag
-          gh release create latest dist/* \
-            --target "$SHA" \
-            --title "Latest build" \
-            --latest \
-            --notes "Rolling build of \`main\` at ${SHA:0:7}: ${SUBJECT%%$'\n'*}
+          notes="Rolling build of \`main\` at ${SHA:0:7}: ${SUBJECT%%$'\n'*}
 
           Replaced automatically on every push to \`main\` that passes CI. There are no versioned releases."
+
+          if ! gh release view latest >/dev/null 2>&1; then
+            # First run, or the release was removed by hand.
+            gh api -X DELETE "repos/$GH_REPO/git/refs/tags/latest" 2>/dev/null || true  # orphaned tag
+            gh release create latest dist/* --target "$SHA" --title "Latest build" --latest --notes "$notes"
+            exit 0
+          fi
+
+          # Move the tag first. Whatever fails from here on, the release keeps
+          # downloadable installers (at worst the previous build's).
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$SHA" -F force=true >/dev/null
+          # Same-named installers are replaced in place (a few seconds of mixed
+          # old/new between the two platforms' files, never an empty release).
+          gh release upload latest dist/* --clobber
+          # Drop installers a renamed build no longer produces (e.g. a version bump).
+          gh release view latest --json assets -q '.assets[].name' | while read -r name; do
+            [ -e "dist/$name" ] || gh release delete-asset latest "$name" --yes
+          done
+          gh release edit latest --title "Latest build" --latest --notes "$notes"
