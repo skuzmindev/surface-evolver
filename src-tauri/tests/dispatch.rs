@@ -1,15 +1,8 @@
-//! End-to-end tests for the `rpc` Tauri command against a real (headless)
-//! AppHandle — MockRuntime stands in for the real webview/window, but
-//! everything below it is real: a real se-worker subprocess, real libse,
-//! real fe/ fixtures, real filesystem paths. This is `dispatch()`'s own
-//! coverage (audit item A6): before this file, src-tauri/src/rpc.rs had zero
-//! tests.
+//! End-to-end tests of the `rpc` command. MockRuntime replaces the webview;
+//! everything below it is real: the se-worker, libse, fe/ files, the filesystem.
 //!
-//! `dispatch()` re-reads SE_LIB_PATH / SE_FE_DIR / SE_WORKER_PATH /
-//! SE_STATE_DIR from the process environment on every call (see rpc.rs), so
-//! tests that vary them can't run concurrently with each other in this
-//! binary — every test takes LOCK first. (Separate test *binaries*, e.g.
-//! manager.rs, are separate processes and don't share this problem.)
+//! `dispatch()` reads the SE_* paths from the environment on every call, so
+//! tests that set them can't run concurrently: each takes `LOCK` first.
 
 mod common;
 
@@ -22,10 +15,8 @@ use tauri::{App, Manager};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// Points SE_FE_DIR at the real bundled fe/ and SE_STATE_DIR at a fresh
-/// scratch dir, holds LOCK for the guard's lifetime, and hands back a mock
-/// app with AppState + the opener plugin (saveExport calls app.opener())
-/// managed exactly as main.rs does.
+/// A mock app set up like main.rs, with SE_FE_DIR at the bundled fe/ and
+/// SE_STATE_DIR at a fresh scratch dir. Holds `LOCK` while alive.
 struct TestApp {
     app: App<MockRuntime>,
     state_dir: std::path::PathBuf,
@@ -91,7 +82,7 @@ fn full_session_lifecycle_round_trips_through_the_app_layer() {
 
     let run = t.call("runCommand", json!({ "sessionId": sid, "command": "r; g 5" })).expect("runCommand");
     assert!(run["energy"].is_f64());
-    // The UI refetches the mesh only on this flag (#21); rpc must pass it through.
+    // The UI refetches the mesh only on this flag.
     assert_eq!(run["geometry_changed"], true);
 
     let mesh = t.call("getMesh", json!({ "sessionId": sid, "colors": true })).expect("getMesh");
@@ -110,8 +101,7 @@ fn full_session_lifecycle_round_trips_through_the_app_layer() {
     let fe_export = t.call("exportFe", json!({ "sessionId": sid })).expect("exportFe");
     assert!(fe_export["filename"].as_str().unwrap().ends_with(".fe"));
 
-    // Nothing is running, so Stop has nothing to interrupt: a no-op that
-    // keeps the session (it used to kill it; see #35).
+    // Nothing is running, so Stop is a no-op that keeps the session.
     let cancelled = t.call("cancel", Value::Null).expect("cancel");
     assert_eq!(cancelled["cancelled"], true);
     assert_eq!(cancelled["interrupted"], true);
@@ -142,14 +132,13 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
     if skip() { return }
     let t = TestApp::new("restore");
 
-    // No prior snapshot yet — must be null, not an error.
+    // No snapshot yet: null, not an error.
     let none = t.call("getRestore", Value::Null).expect("getRestore (empty)");
     assert!(none.is_null());
 
     let session = t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     let sid = session["session_id"].as_str().unwrap().to_string();
-    // runCommand triggers a best-effort background snapshot (rpc.rs's
-    // `persist`) — poll briefly for it rather than assuming a fixed delay.
+    // The snapshot is written in the background, so poll for it.
     t.call("runCommand", json!({ "sessionId": sid, "command": "g 1" })).expect("runCommand");
     let snapshot_file = t.state_dir.join("last-session.json");
     for _ in 0..50 {
@@ -158,18 +147,15 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
     }
     assert!(snapshot_file.exists(), "snapshot was never written");
 
-    // Fresh AppState (as if the app had just restarted) pointed at the same
-    // SE_STATE_DIR must resume the session from disk.
+    // A fresh AppState, as after a restart, on the same SE_STATE_DIR.
     let app2 = mock_builder()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .build(mock_context(noop_assets()))
         .expect("build second mock app");
     let handle2 = app2.handle().clone();
-    // Two overlapping calls, as React StrictMode's double-run mount effect
-    // makes in dev: the one that finds the restore still running must wait
-    // for it, not answer null (the UI ignores the first call's answer).
-    // Released together, so the second lands while the first's worker spawns.
+    // Two overlapping calls, as React StrictMode makes in dev: the one that finds
+    // the restore running must wait for it, not answer null.
     let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
     let calls: Vec<_> = (0..2)
         .map(|_| {
@@ -186,13 +172,12 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
     assert_eq!(restored["fe_file"], "cube.fe");
     assert!(restored["session_id"].is_string());
 
-    // A second call is memoized, not re-read from disk / re-parsed.
+    // A later call returns the same session, not a second restore.
     let restored2 = tauri::async_runtime::block_on(rpc::rpc(handle2.clone(), "getRestore".into(), Value::Null))
         .expect("getRestore (memoized)");
     assert_eq!(restored2, restored);
 
-    // #33: once the user opens another file, the restored session is dead. A
-    // later getRestore (an error-boundary reload) must not hand it back.
+    // Once another file is open the restored session is dead and must not come back.
     tauri::async_runtime::block_on(rpc::rpc(handle2.clone(), "createSession".into(), json!({ "fe_file": "sphere.fe" })))
         .expect("createSession after restore");
     let after = tauri::async_runtime::block_on(rpc::rpc(handle2, "getRestore".into(), Value::Null))
@@ -200,27 +185,23 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
     assert!(after.is_null(), "getRestore returned a replaced session: {after}");
 }
 
+/// A late getRestore must not kill the worker of a file the user already opened.
 #[test]
 fn get_restore_is_a_noop_once_the_user_has_already_loaded_a_file() {
     if skip() { return }
     let t = TestApp::new("restore-noop");
     t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
-    // A late getRestore (e.g. a startup race) must not kill the fresh
-    // worker underneath the user — rpc.rs's getRestore skips the load when a
-    // session already exists.
     let restore = t.call("getRestore", Value::Null).expect("getRestore");
     assert!(restore.is_null());
-    // The live session must still work.
     let files = t.call("listFiles", Value::Null).expect("listFiles still works");
     assert!(files.as_array().unwrap().len() >= 20);
 }
 
+/// createSession kills the old worker before loading, so a failed load must
+/// report the old session gone rather than leave it for later commands to fail on.
 #[test]
 fn a_failed_load_ends_the_old_session_instead_of_leaving_it_dead() {
     if skip() { return }
-    // #16: createSession kills the old worker before loading. If the load
-    // then fails, the old session must be reported gone, not left in place
-    // for every later command to fail against.
     let t = TestApp::new("failed-reload");
     let old = t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     let old_sid = old["session_id"].as_str().unwrap().to_string();
@@ -234,12 +215,11 @@ fn a_failed_load_ends_the_old_session_instead_of_leaving_it_dead() {
     assert_eq!(err, "No file is loaded");
 }
 
+/// A worker that dies between requests: the next request reports the session
+/// gone, and the one after finds no session rather than a dead worker.
 #[test]
 fn a_worker_crash_ends_the_session() {
     if skip() { return }
-    // #16, second half: the worker dies between requests (simulated by
-    // killing it under the app). The next request reports the session gone,
-    // and the one after that finds no session rather than a dead worker.
     let t = TestApp::new("crash");
     let s = t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     let sid = s["session_id"].as_str().unwrap().to_string();
@@ -251,32 +231,29 @@ fn a_worker_crash_ends_the_session() {
     assert_eq!(err, "No file is loaded");
 }
 
+/// A datafile that fails to load must still reach the editor, to be fixed there.
 #[test]
 fn read_file_returns_datafile_text_without_a_session() {
     if skip() { return }
-    // A datafile that fails to load must still be readable, or the editor has
-    // nothing to show and a broken Save & Reload can't be fixed in the app.
     let t = TestApp::new("read-file");
     let bundled = t.call("readFile", json!({ "filename": "cube.fe" })).expect("readFile bundled");
     assert_eq!(bundled["filename"], "cube.fe");
     assert!(bundled["content"].as_str().unwrap().contains("vertices"));
 
-    // A user copy (what Save & Reload writes) wins over the bundled file,
-    // exactly as createSession resolves it.
+    // A user copy, as Save & Reload writes, wins over the bundled file.
     t.call("updateFile", json!({ "filename": "cube.fe", "content": "broken text" })).expect("updateFile");
     let user = t.call("readFile", json!({ "filename": "cube.fe" })).expect("readFile user copy");
     assert_eq!(user["content"], "broken text");
 
-    // Directory components are stripped, like every other filename param.
+    // Directory components are stripped.
     let err = t.call("readFile", json!({ "filename": "../../etc/does_not_exist.fe" })).unwrap_err();
     assert!(err.contains("File not found"), "got: {err}");
 }
 
+/// Stop sends SIGINT first, so the session and its evolved surface survive.
 #[test]
 fn cancel_interrupts_a_running_command_and_keeps_the_session() {
     if skip() { return }
-    // #35 through the app layer: Stop sends SIGINT first, so the session
-    // and its evolved surface survive; kill is only the fallback.
     let t = TestApp::new("cancel-interrupt");
     let s = t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     let sid = s["session_id"].as_str().unwrap().to_string();
@@ -301,12 +278,11 @@ fn cancel_interrupts_a_running_command_and_keeps_the_session() {
     assert_eq!(mesh["ok"], true);
 }
 
+/// An empty command succeeds and reports the current energy and area (the UI's
+/// refresh after Stop); only a missing `command` is an error.
 #[test]
 fn an_empty_command_reports_the_current_stats() {
     if skip() { return }
-    // After an interrupted Stop the UI refreshes energy/area with an empty
-    // command (nothing to run, so it succeeds and reports the surface as it
-    // stands). Only a missing `command` is an error.
     let t = TestApp::new("empty-command");
     let s = t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     let sid = s["session_id"].as_str().unwrap().to_string();
@@ -316,11 +292,10 @@ fn an_empty_command_reports_the_current_stats() {
     assert!(err.contains("command is required"), "got: {err}");
 }
 
+/// What the datafile's `read` section printed comes back with createSession.
 #[test]
 fn create_session_reports_what_the_read_section_printed() {
     if skip() { return }
-    // se_load runs the datafile's `read` section; its output comes back with
-    // createSession (not in the stored session record) so the UI can log it.
     let t = TestApp::new("load-output");
     let fe = base64_encode(b"vertices\n1 0 0 0\n2 1 0 0\n3 0 1 0\nedges\n1 1 2\n2 2 3\n3 3 1\nfaces\n1 1 2 3\nread\nprint 5150\n");
     t.call("uploadFile", json!({ "filename": "prints.fe", "content": fe })).expect("upload");

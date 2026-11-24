@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
 
-// Native menu clicks arrive as `se-menu` CustomEvents carrying an action string
-// (see src-tauri/src/menu.rs). Each consumer receives every action and acts
-// on the prefixes it owns, ignoring the rest. Ref-stable so inline handlers
-// don't re-bind the listener every render.
+/**
+ * Calls `handler` with every native menu action (an `se-menu` event, see
+ * src-tauri/src/menu.rs); each consumer acts on the prefixes it owns. The latest
+ * handler is kept in a ref, so an inline one doesn't re-bind the listener.
+ */
 export function useMenuAction(handler: (action: string) => void): void {
   const ref = useRef(handler)
   ref.current = handler

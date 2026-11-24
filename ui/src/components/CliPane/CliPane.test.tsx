@@ -73,7 +73,7 @@ describe('CliPane', () => {
     resolveRun({ output: '', energy: null, area: null }) // let the pending call settle
   })
 
-  it('when the kill fallback restores a snapshot, Stop adopts the new session (#22)', async () => {
+  it('when the kill fallback restores a snapshot, Stop adopts the new session', async () => {
     useStore.setState({ sessionId: 's1', activeFile: 'cube.fe' })
     let resolveRun!: (v: RunCommandResponse) => void
     vi.mocked(runCommand).mockReturnValue(new Promise(r => { resolveRun = r }))

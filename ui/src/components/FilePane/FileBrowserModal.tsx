@@ -12,9 +12,8 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 }
 
 /**
- * Modal file browser: bundled .fe library + upload. `onPick(file)` is called
- * when the user chooses a built-in file or after a successful upload; the
- * caller opens it (creates the session and adds it to the open-files list).
+ * The file browser dialog: the bundled .fe library plus upload. `onPick(file)`
+ * runs when the user picks a file or finishes an upload; the caller opens it.
  */
 export default function FileBrowserModal({ open, onClose, onPick }: {
   open: boolean
@@ -30,9 +29,8 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dialogRef    = useRef<HTMLDivElement>(null)
 
-  // Keyboard behaviour of a modal dialog (#25): focus moves into it on open
-  // and back to whatever opened it on close, Escape closes it, and Tab cycles
-  // inside instead of wandering into the app behind the backdrop.
+  // Modal keyboard behaviour: focus moves in on open and back on close, Escape
+  // closes, and Tab cycles inside instead of reaching the app behind.
   useEffect(() => {
     if (!open) return
     const opener = document.activeElement as HTMLElement | null

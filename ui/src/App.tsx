@@ -9,7 +9,7 @@ import { useStore } from './store/useStore'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
-// Follow the OS light/dark appearance — native desktop behaviour, no toggle.
+/** Follows the OS light/dark appearance, as native desktop apps do; there's no toggle. */
 function useSystemTheme() {
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
@@ -23,6 +23,7 @@ function useSystemTheme() {
 
 // ── Resize ────────────────────────────────────────────────────────────────────
 
+/** A mousedown handler that reports drag movement along one axis to `onDelta`. */
 function useDrag(direction: 'h' | 'v', onDelta: (d: number) => void) {
   return useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -56,8 +57,7 @@ function Navbar({ sidebarOpen, onToggleSidebar }: {
     <div data-tauri-drag-region className="navbar min-h-0 h-11 bg-base-200 border-b border-base-300 px-2 gap-0 shrink-0">
 
       {/* ── Left ── (traffic-light inset only exists on macOS) */}
-      {/* data-tauri-drag-region on the non-interactive containers/text makes them
-          window drag handles; the button lacks it, so it stays clickable. */}
+      {/* data-tauri-drag-region makes the containers and text drag the window; the button stays clickable. */}
       <div data-tauri-drag-region className={`navbar-start gap-1.5 min-w-0 ${navigator.platform.includes('Mac') ? 'pl-[72px]' : 'pl-1'}`}>
         <button
           className={`btn btn-ghost btn-xs btn-square ${sidebarOpen ? 'bg-base-300' : ''}`}
@@ -108,7 +108,7 @@ function StatChip({ label, value }: { label: string; value: string }) {
   )
 }
 
-// The standard sidebar-toggle glyph: a window frame with its left panel filled.
+/** The sidebar-toggle glyph: a window frame with its left panel filled. */
 function SidebarIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -132,7 +132,7 @@ function Inner() {
   useSystemTheme()
   const [sidebarOpen,  setSidebarOpen]  = useState(true)
 
-  // Native View menu → explorer toggle.
+  // View ▸ Toggle Sidebar.
   useMenuAction(a => {
     if (a === 'view:sidebar') setSidebarOpen(o => !o)
   })
@@ -141,8 +141,7 @@ function Inner() {
   const [viewerPct,    setViewerPct]    = useState(62)
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // Files (left) + Editor (middle): both handles sit on the panel's right edge,
-  // so dragging right grows the panel.
+  // Both handles sit on their panel's right edge, so dragging right grows it.
   const onSidebarDrag = useDrag('h', useCallback((d: number) => {
     setSidebarWidth(w => Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w + d)))
   }, []))

@@ -1,8 +1,5 @@
-//! Automates the AGENTS.md claim "all bundled `.fe` datafiles load and
-//! produce facets" — previously a manual shell loop, now a real test so a
-//! regression fails CI instead of waiting for someone to run the loop by
-//! hand. Includes `crystal.fe`, whose `Wulff "octa.wlf"` pulls in the
-//! bundle's only cross-file dependency.
+//! Every bundled `.fe` file loads and produces facets, including `crystal.fe`,
+//! whose `Wulff "octa.wlf"` is the bundle's only cross-file include.
 
 mod common;
 use common::{drive, repo, skip, load};

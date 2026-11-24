@@ -1,9 +1,7 @@
-//! Shared helpers for driving the built `se-worker` binary over stdin/stdout,
-//! exactly as `src-tauri/src/worker.rs` does. Used by both smoke.rs and
-//! fixtures.rs — kept here once both needed it.
+//! Helpers that drive the built `se-worker` over stdin/stdout, as the app does.
 //!
-//! Each integration test binary compiles this module separately, so a helper
-//! unused by one binary (e.g. `cube()` in fixtures.rs) would warn there.
+//! Each test binary compiles this module separately, so a helper one of them
+//! doesn't use would warn there.
 
 #![allow(dead_code)]
 
@@ -13,20 +11,18 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 pub fn repo() -> PathBuf {
-    // ../.. — this crate lives at src-tauri/worker/, so the repo root is two up.
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The worker binary under test. SE_WORKER_PATH lets CI drive the shipped
-/// release build (panic = "abort", LTO, opt-level "z") instead of the
-/// dev-profile binary cargo test builds.
+/// The worker binary under test. SE_WORKER_PATH lets CI test the shipped
+/// release build instead of the dev-profile one cargo builds.
 pub fn worker_bin() -> PathBuf {
     std::env::var_os("SE_WORKER_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_se-worker")))
 }
 
-/// Feed the worker a script of commands; collect one JSON reply per line.
+/// Feeds the worker a script of commands and collects one JSON reply per line.
 pub fn drive(lines: &[String]) -> Vec<Value> {
     drive_env(lines, &[])
 }
@@ -58,8 +54,7 @@ pub fn drive_env(lines: &[String], env: &[(&str, &std::path::Path)]) -> Vec<Valu
         .collect()
 }
 
-/// A `load` request, built with serde_json so any path is escaped correctly
-/// (a backslash or quote in a hand-formatted one made invalid JSON).
+/// A `load` request, built with serde_json so any path is escaped correctly.
 pub fn load(path: &std::path::Path) -> String {
     serde_json::json!({ "cmd": "load", "path": path }).to_string()
 }
@@ -68,8 +63,8 @@ pub fn cube() -> String {
     load(&repo().join("fe/cube.fe"))
 }
 
-/// Skip when no engine is configured, so a fresh checkout stays green — except
-/// under CI (GitHub Actions sets CI=true), where a skip would be a silent pass.
+/// Whether to skip because no engine is configured, so a fresh checkout stays
+/// green. Under CI it fails instead, where a skip would be a silent pass.
 pub fn skip() -> bool {
     if std::env::var("SE_LIB_PATH").is_err() {
         assert!(std::env::var_os("CI").is_none(), "SE_LIB_PATH unset under CI — refusing to skip");

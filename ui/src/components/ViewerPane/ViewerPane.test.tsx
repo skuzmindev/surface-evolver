@@ -1,8 +1,6 @@
-// jsdom has no WebGL, so @react-three/fiber's <Canvas> (which needs a real
-// GL context) is stubbed out to just render its children — this tests the
-// DOM logic ViewerPane owns (toolbar, empty states, mesh stat badge, picked-
-// vertex panel), not Three.js rendering. See the plan: "not chasing pixel
-// output".
+// jsdom has no WebGL, so <Canvas> just renders its children: these test the
+// DOM ViewerPane owns (toolbar, empty states, stats badge, vertex panel), not
+// three.js rendering.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -105,7 +103,7 @@ describe('ViewerPane', () => {
     expect(await screen.findByText('Click a vertex to inspect')).toBeInTheDocument()
   })
 
-  it('frames the camera once per session, not on every refetch (#21)', async () => {
+  it('frames the camera once per session, not on every refetch', async () => {
     three.camera.position.set.mockClear()
     useStore.setState({ sessionId: 's1', meshVersion: 0 })
     vi.mocked(getMesh).mockImplementation(async () => ({ ...mesh }))   // a new object each fetch
@@ -141,7 +139,7 @@ describe('ViewerPane', () => {
     expect(x).toBeGreaterThan(100)                               // backed off to fit it
   })
 
-  it('the Loading badge clears when the session ends mid-fetch (#34)', async () => {
+  it('the Loading badge clears when the session ends mid-fetch', async () => {
     useStore.setState({ sessionId: 's1' })
     vi.mocked(getMesh).mockReturnValue(new Promise(() => {}))   // never settles
     render(<ViewerPane />)
@@ -151,7 +149,7 @@ describe('ViewerPane', () => {
     expect(screen.queryByText('Loading')).not.toBeInTheDocument()
   })
 
-  it('the vertex count is the engine\'s, not the unwrapped duplicates (#17)', async () => {
+  it('the vertex count is the engine\'s, not the unwrapped duplicates', async () => {
     useStore.setState({ sessionId: 's1' })
     // 3 engine vertices plus 1 appended copy for an unwrapped periodic facet.
     vi.mocked(getMesh).mockResolvedValue({ ...mesh, vertices: [...mesh.vertices, [2, 0, 0]], unwrap_source: [1] })
@@ -159,7 +157,7 @@ describe('ViewerPane', () => {
     expect(await screen.findByText(/3 v · 3 e · 1 f/)).toBeInTheDocument()
   })
 
-  it('picking an unwrapped duplicate of a periodic vertex inspects the engine vertex it copies (#17)', async () => {
+  it('picking an unwrapped duplicate of a periodic vertex inspects the engine vertex it copies', async () => {
     useStore.setState({ sessionId: 's1' })
     // Index 3 is the worker's appended copy of engine vertex 1, shifted by a period.
     vi.mocked(getMesh).mockResolvedValue({ ...mesh, vertices: [...mesh.vertices, [2, 0, 0]], unwrap_source: [1] })

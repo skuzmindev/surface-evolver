@@ -5,7 +5,7 @@ import { useStore } from '../../store/useStore'
 import { useMenuAction } from '../../hooks/useMenuAction'
 import OutputLog from './OutputLog'
 
-// Structured topology ops, routed from the native Run menu (see useMenuAction).
+/** Topology operations the native Run menu triggers. */
 const TOPO_OPS: { op: TopoOp; label: string }[] = [
   { op: 'refine',     label: 'Refine'  },
   { op: 'equi',       label: 'Equiang' },
@@ -13,34 +13,34 @@ const TOPO_OPS: { op: TopoOp; label: string }[] = [
   { op: 'pop',        label: 'Pop'     },
 ]
 
-// Turn the structured counts object into a compact one-line summary.
+/** A topology op's change counts as one line, e.g. "vertices +12, edgeswap +3". */
 function summarize(counts: Record<string, number>): string {
   const parts = Object.entries(counts).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v > 0 ? '+' : ''}${v}`)
   return parts.length ? parts.join(', ') : 'no change'
 }
 
+/** The command line: runs SE commands and topology ops, shows their output, and stops them. */
 export default function CliPane() {
   const { sessionId, outputLog, appendLog, setStats, bumpMeshVersion, clearSession, setSession } = useStore()
   const [input, setInput] = useState('')
   const [busy, setBusy]   = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Stop. The backend interrupts the command (SIGINT) and keeps the surface;
-  // only if that fails does it kill the worker, and then the in-memory surface
-  // is gone: the backend reloads the file's last auto-snapshot if there is one,
-  // otherwise the tab stays so the file can be reopened.
-  // Set by Stop: the stopped command's own failure (the killed worker's
-  // in-flight request) is expected, not a crash worth reporting.
+  // Set by Stop: the stopped command's own failure is expected, not worth reporting.
   const stoppedRef = useRef(false)
   function logCommandError(err: unknown) {
     if (stoppedRef.current) return
     const msg = err instanceof Error ? err.message : String(err)
-    // ERROR 2073 ("Command aborted due to user interrupt") only ever answers
-    // our own SIGINT: Stop, or closing the tab. It is not a failure.
+    // ERROR 2073 only ever answers our own SIGINT (Stop, or closing the tab).
     if (/\bERROR 2073\b/.test(msg)) return
     appendLog(`[error] ${msg}`)
   }
 
+  /**
+   * Stop. The backend interrupts the command and keeps the evolved surface. If
+   * that fails it kills the worker and reloads the file's last snapshot when
+   * there is one; otherwise the tab stays so the file can be reopened.
+   */
   async function handleStop() {
     if (!sessionId) return
     stoppedRef.current = true
@@ -48,15 +48,12 @@ export default function CliPane() {
       const res = await cancelSession()
       if (res?.interrupted) {
         appendLog('[stopped] command interrupted — the evolved surface is kept')
-        // The command stopped part-way: show the surface as it stands. An
-        // empty command succeeds and reports the current energy and area.
+        // An empty command reports the energy and area as the surface stands.
         const now = await runCommand(sessionId, '')
         setStats(now.energy, now.area)
         if (now.geometry_changed !== false) bumpMeshVersion()
         return
       }
-      // The command ignored SIGINT, so the backend killed the worker and
-      // reloaded this file's last snapshot into a new session (#22).
       const r = res?.restored
       if (r) {
         setSession(r.session_id, r.fe_file)
@@ -72,7 +69,7 @@ export default function CliPane() {
     }
   }
 
-  // Native Run menu → iterate `g N` (reuses the run path so stats/mesh refresh).
+  /** The Run menu's iterate items: `g N` through the same path as a typed command. */
   async function runG(n: number) {
     if (!sessionId || busy) return
     appendLog(`> g ${n}`)
@@ -129,8 +126,7 @@ export default function CliPane() {
       if (res.output) appendLog(res.output)
       if (res.energy !== null || res.area !== null) {
         setStats(res.energy, res.area)
-        // Refetch only when the drawn geometry changed (#21): `print`, `v` and
-        // friends no longer re-download the mesh or reset the view.
+        // Refetch only when the drawn geometry changed, not after `print` and the like.
         if (res.geometry_changed !== false) bumpMeshVersion()
       }
     } catch (err: unknown) {
@@ -159,9 +155,7 @@ export default function CliPane() {
           }}
           placeholder={sessionId ? 'SE command…' : 'Load a file first'}
           aria-label="Surface Evolver command"
-          // readOnly, not disabled, while a command runs: a disabled input
-          // drops focus to the page and can't take it back until React
-          // re-renders it enabled (#25). Esc in it stops the command.
+          // readOnly, not disabled, while busy: a disabled input loses focus to the page.
           disabled={!sessionId}
           readOnly={busy}
           aria-busy={busy}

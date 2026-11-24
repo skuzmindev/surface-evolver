@@ -8,18 +8,14 @@ export interface ThemeColors {
   wire:     THREE.Color   // wireframe, drawn on the background (base-content)
 }
 
-// Normalise any computed CSS colour (rgb, oklch, color() …) to a THREE.Color
-// via a canvas: its fillStyle setter parses every CSS colour form, and a
-// painted pixel reads back as plain sRGB bytes. (Don't read fillStyle back —
-// current Chromium returns "oklch(…)" from the getter, which THREE parses as
-// white.) Avoids hand-parsing oklch.
+// A canvas turns any CSS colour into sRGB bytes: fillStyle parses every colour
+// form, and a painted pixel reads back plain. Reading fillStyle back would not
+// do: Chromium returns "oklch(…)", which THREE parses as white.
 const ctx = typeof document !== 'undefined'
   ? document.createElement('canvas').getContext('2d')
   : null
 
-// Read a theme colour CSS variable (e.g. --mesh) straight off :root, where it
-// is always defined for the active [data-theme]. The value is any CSS colour
-// (daisyUI 5 themes hold whole colours); normalise it via the canvas.
+/** A theme colour variable (e.g. `--mesh`) from :root, as a THREE.Color. */
 function varColor(name: string, fallback: string): THREE.Color {
   if (!ctx) return new THREE.Color(fallback)
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -31,22 +27,19 @@ function varColor(name: string, fallback: string): THREE.Color {
 }
 
 function read(): ThemeColors {
-  // --mesh / --mesh-edge are app-specific theme variables (styles/global.css):
-  // light-grey facets with near-black edges in both modes, as SE draws them.
+  // --mesh and --mesh-edge come from styles/global.css: light facets, dark edges, as SE draws them.
   const surface = varColor('--mesh', '#d4d4d4')
   return {
     surface,
     specular: surface.clone().lerp(new THREE.Color('#ffffff'), 0.6),
     line:     varColor('--mesh-edge', '#0a0a0a'),
-    // Wireframe has no facets behind it, so a near-black edge colour vanished
-    // on the dark theme's near-black background. The theme foreground
-    // (daisyUI's base-content) contrasts with the background in both themes.
+    // The foreground colour: a wireframe has no facets behind it, so the dark
+    // edge colour would vanish on the dark theme.
     wire:     varColor('--color-base-content', '#737373'),
   }
 }
 
-// Mesh material colours derived from the active daisyUI theme. Recomputes when
-// the theme changes (the app follows the OS appearance via data-theme).
+/** Mesh material colours from the active theme, updated when the theme changes. */
 export function useThemeColors(): ThemeColors {
   const [colors, setColors] = useState<ThemeColors>(read)
   useEffect(() => {

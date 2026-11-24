@@ -1,8 +1,5 @@
-//! Integration tests for `worker::Manager` — the Tauri app's own session/
-//! worker-lifecycle code (src-tauri/src/worker.rs), which had zero coverage
-//! before this (audit item A6). `Manager` takes plain paths, not an AppHandle,
-//! so this drives it directly against a real se-worker subprocess, real
-//! libse, and real fe/ fixtures — no mocking needed for this layer.
+//! Tests of `worker::Manager` against a real se-worker, libse and fe/ files.
+//! It takes plain paths, not an AppHandle, so no mocking is needed.
 
 mod common;
 
@@ -32,16 +29,16 @@ fn reload_kills_previous_worker_and_starts_fresh() {
         .expect("load s2");
     assert!(stats2["vertex_count"].as_u64().unwrap() > 0);
 
-    // s1's worker is gone — a request against it must fail, not silently hit
-    // the new worker underneath it.
+    // A request for s1 must fail, not silently reach s2's worker.
     let err = mgr.request("s1", json!({ "cmd": "mesh" })).unwrap_err();
     assert!(err.contains("not currently loaded"), "got: {err}");
 
-    // s2 is the live session and still works.
     let mesh = mgr.request("s2", json!({ "cmd": "mesh" })).expect("mesh s2");
     assert_eq!(mesh["ok"], true);
 }
 
+/// Engine state after a failed load is undefined, so the attempt must not be
+/// registered as a session, and the next good load must work normally.
 #[test]
 fn failed_load_leaves_manager_clean_for_the_next_attempt() {
     if skip() { return }
@@ -60,9 +57,6 @@ fn failed_load_leaves_manager_clean_for_the_next_attempt() {
         .unwrap_err();
     assert!(err.to_lowercase().contains("soapfilm"), "got: {err}");
 
-    // Engine state after a failed load is undefined (Landmine 1) — Manager
-    // must not register the failed attempt as a live session, and a
-    // subsequent good load must work as if nothing happened.
     let after = mgr.request("bad", json!({ "cmd": "mesh" }));
     assert!(after.is_err(), "no session should be registered after a failed load");
 
@@ -95,9 +89,7 @@ fn worker_dying_mid_session_is_reported_and_recovered_from() {
     mgr.load_session("s1", &fe("cube.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load s1");
 
-    // Simulate a crash out from under the manager (not via kill(), which
-    // would clear `io` itself) — proc is `pub` exactly so callers can do
-    // this without touching `io`, per the worker.rs Landmine-1 comment.
+    // Crash it behind the manager's back; `kill()` would clear `io` itself.
     {
         let mut proc = lock(&mgr.proc);
         let child = proc.as_mut().expect("worker running");
@@ -108,22 +100,19 @@ fn worker_dying_mid_session_is_reported_and_recovered_from() {
     let err = mgr.request("s1", json!({ "cmd": "mesh" })).unwrap_err();
     assert!(!err.is_empty());
 
-    // The dead worker's `io` state must have been cleared by the failed
-    // request, not left dangling — the next load must succeed cleanly.
+    // The failed request must have cleared `io`, so the next load works.
     let stats = mgr
         .load_session("s2", &fe("cube.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load after a crashed worker must still work");
     assert_eq!(stats["vertex_count"], 14);
 }
 
+/// Why `io` and `proc` are separate locks: `kill` must not wait for the running
+/// command. It takes only `proc`, so the blocked request gets EOF and errors.
+/// Detached threads and a timeout make a regression fail instead of hang.
 #[test]
 fn kill_unblocks_an_in_flight_request() {
     if skip() { return }
-    // The reason for the io/proc mutex split: Stop must not wait for the
-    // running command. kill() takes only `proc`, so the blocked reader gets
-    // EOF and the request returns an error instead of running to completion.
-    // Detached threads + a channel timeout: if kill() regresses to waiting on
-    // `io`, this fails in 10 s instead of hanging the whole test run.
     let mgr = std::sync::Arc::new(Manager::default());
     mgr.load_session("s1", &fe("cube.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load cube.fe");
@@ -143,12 +132,11 @@ fn kill_unblocks_an_in_flight_request() {
     assert!(mgr.request("s1", json!({ "cmd": "mesh" })).is_err(), "no session survives a kill");
 }
 
+/// SIGINT aborts the command (ERROR 2073) and keeps the worker and the partly
+/// evolved surface.
 #[test]
 fn interrupt_stops_a_running_command_and_keeps_the_session() {
     if skip() { return }
-    // #35: SIGINT makes SE abort the command (ERROR 2073) and keep both the
-    // worker and the partly evolved surface. Stop used to kill the worker
-    // and throw that surface away.
     let mgr = std::sync::Arc::new(Manager::default());
     mgr.load_session("s1", &fe("cube.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load cube.fe");
@@ -166,7 +154,7 @@ fn interrupt_stops_a_running_command_and_keeps_the_session() {
     let err = res.expect_err("an interrupted command reports the abort");
     assert!(err.contains("2073"), "got: {err}");
 
-    // Same worker, same session, and the surface kept what it had evolved.
+    // Same session, and the surface kept what it had evolved.
     let after = mgr.request("s1", json!({ "cmd": "run", "command": "" })).expect("session survives");
     assert!(after["energy"].as_f64().unwrap() < 6.0, "surface was reset: {after}");
 }
@@ -178,25 +166,23 @@ fn interrupt_with_nothing_running_is_a_no_op() {
     mgr.load_session("s1", &fe("cube.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load cube.fe");
     assert!(mgr.interrupt(std::time::Duration::from_secs(1)));
-    // No stray SIGINT reached the idle engine to abort this.
+    // No stray SIGINT reached the idle engine.
     let r = mgr.request("s1", json!({ "cmd": "run", "command": "g 2" })).expect("next command runs");
     assert_eq!(r["ok"], true);
 }
 
+/// SE honours SIGINT only while it iterates, so one sent during a mesh fetch is
+/// lost and the `g` queued behind it runs on. `interrupt` must keep signalling
+/// until the worker is idle.
 #[test]
 fn interrupt_reaches_a_command_queued_behind_a_slow_mesh_fetch() {
     if skip() { return }
-    // Found by the real-app smoke test: SE only honours SIGINT while it
-    // iterates. Stop pressed during a long mesh fetch (refined foam, ~1 s)
-    // lost its one SIGINT, the queued `g` then ran on, and Stop killed the
-    // worker. The interrupt has to keep trying until the worker is idle.
     let mgr = std::sync::Arc::new(Manager::default());
     mgr.load_session("s1", &fe("phelanc.fe").to_string_lossy(), &worker_bin(), &lib_path())
         .expect("load phelanc.fe");
     mgr.request("s1", json!({ "cmd": "run", "command": "r; r; r; r" })).expect("refine");
 
-    // Two callers, as in the app: the viewer's mesh fetch, and the CLI's `g`
-    // queued behind it on the `io` lock.
+    // As in the app: the viewer's mesh fetch, with the CLI's `g` queued behind it.
     let m = mgr.clone();
     std::thread::spawn(move || { let _ = m.request("s1", json!({ "cmd": "mesh", "colors": true })); });
     std::thread::sleep(std::time::Duration::from_millis(50));

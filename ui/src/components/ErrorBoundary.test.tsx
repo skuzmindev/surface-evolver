@@ -11,7 +11,7 @@ function Flaky() {
 }
 
 describe('ErrorBoundary', () => {
-  it('replaces only the named pane and re-mounts it on Try again (#33)', async () => {
+  it('replaces only the named pane and re-mounts it on Try again', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     broken.now = true
     render(

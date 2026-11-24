@@ -17,7 +17,7 @@ const rpcMethods = () =>
 
 const pressSave = () => fireEvent.keyDown(window, { key: 's', metaKey: true })
 
-describe('Save & Reload shortcut (#15)', () => {
+describe('Save & Reload shortcut', () => {
   it('⌘S with no edits does nothing — the evolved surface is not reloaded from disk', async () => {
     useStore.setState({ sessionId: 's1', activeFile: 'cube.fe', fileContent: 'vertices' })
     render(<EditorPane />)
@@ -47,7 +47,7 @@ describe('Save & Reload shortcut (#15)', () => {
   })
 })
 
-describe('a session that ends under the UI (#16)', () => {
+describe('a session that ends under the UI', () => {
   it('a worker crash mid-command drops the session, and clicking the tab reloads it', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1', energy: 6 })
     answerRpc({
@@ -155,7 +155,7 @@ describe('Stop', () => {
   })
 })
 
-describe('Stop with an interrupt (#35)', () => {
+describe('Stop with an interrupt', () => {
   it('keeps the session and the evolved surface, and refreshes the stats', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1', energy: 6 })
     let failRun!: (e: unknown) => void
@@ -188,7 +188,7 @@ describe('Stop with an interrupt (#35)', () => {
   })
 })
 
-describe('Save & Reload keeps the editing session (#23)', () => {
+describe('Save & Reload keeps the editing session', () => {
   it('undo still works after a successful save, and the text stays put', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1', fileContent: 'vertices' })
     answerRpc({
@@ -214,7 +214,7 @@ describe('Save & Reload keeps the editing session (#23)', () => {
   })
 })
 
-describe('closing a tab while its command runs (#24)', () => {
+describe('closing a tab while its command runs', () => {
   it('stops the command, and the CLI comes back instead of staying busy', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1' })
     let failRun!: (e: unknown) => void
@@ -257,7 +257,7 @@ describe('loading a datafile', () => {
   })
 })
 
-describe('mesh refetch after a command (#21)', () => {
+describe('mesh refetch after a command', () => {
   it('refetches only when the reply says the drawn geometry changed', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1', meshVersion: 0 })
     let changed = false

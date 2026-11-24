@@ -15,7 +15,7 @@ import VertexInspector from './VertexInspector'
 const MODES: RenderMode[] = ['solid', 'wireframe', 'xray']
 const MODE_LABEL: Record<RenderMode, string> = { solid: 'Solid', wireframe: 'Wire', xray: 'X-Ray' }
 
-// Heroicons 24/outline (MIT), inlined: two icons didn't justify a dependency.
+/** A Heroicons 24/outline icon (MIT), inlined rather than a dependency for two icons. */
 function Icon({ d }: { d: string }) {
   return (
     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
@@ -26,9 +26,10 @@ function Icon({ d }: { d: string }) {
 const ARROW_PATH = 'M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99'
 const CURSOR_RAYS = 'M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59'
 
-// three's own OrbitControls, wired the way drei's wrapper did (damped, updated
-// every frame, registered as R3F's default `controls` for FitCamera) without
-// drei's ~20 transitive dependencies.
+/**
+ * three's OrbitControls: damped, updated every frame, and registered as R3F's
+ * default `controls` for FitCamera.
+ */
 function Controls({ controlsRef }: { controlsRef: RefObject<OrbitControlsImpl | null> }) {
   const camera = useThree(s => s.camera)
   const dom    = useThree(s => s.gl.domElement)
@@ -44,12 +45,12 @@ function Controls({ controlsRef }: { controlsRef: RefObject<OrbitControlsImpl | 
   return null
 }
 
-// Frames the camera on the first mesh of each session (a new file, a reload,
-// a restore), not on every refetch: a `g 1` between orbits used to throw away
-// the user's view (#21). Runs *inside* the Canvas and reads the controls from
-// R3F state (not a ref) so it re-fires once OrbitControls has mounted —
-// otherwise the first load runs before controls exist, the orbit target stays
-// at the origin, and you end up pivoting around a corner vertex.
+/**
+ * Frames the camera on the first mesh of each session (new file, reload,
+ * restore), not on every refetch, so commands keep the user's view. Reads the
+ * controls from R3F state, not a ref, so it re-runs once they mount; otherwise
+ * the orbit target would stay at the origin.
+ */
 function FitCamera({ mesh, fitKey }: { mesh: MeshData | null; fitKey: string | null }) {
   const camera = useThree(s => s.camera)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -87,7 +88,7 @@ export default function ViewerPane() {
   const { data: mesh, isFetching } = useMesh()
   const themeColors = useThemeColors()
 
-  // Characteristic mesh size → raycaster threshold + marker radii (scale-aware).
+  // The mesh's size, which scales the pick threshold and marker radii.
   const meshRadius = useMemo(() => {
     if (!mesh || mesh.vertices.length === 0) return 1
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity]
@@ -100,7 +101,7 @@ export default function ViewerPane() {
   async function handlePick(vpos: number) {
     if (!sessionId || !mesh) return
     setPickedPos(mesh.vertices[vpos] ?? null)
-    // An unwrapped periodic duplicate has no engine position of its own (#17).
+    // An unwrapped periodic duplicate maps back to the engine vertex it copies.
     const src = mesh.unwrap_source ?? []
     const base = mesh.vertices.length - src.length
     const enginePos = vpos >= base ? src[vpos - base] : vpos
@@ -108,7 +109,7 @@ export default function ViewerPane() {
     catch { setPicked(null) }
   }
 
-  // Native View menu → render mode, panel toggles.
+  // The native View menu.
   useMenuAction(a => {
     if (!sessionId) return
     if (a.startsWith('render:'))      setMode(a.slice(7) as RenderMode)
@@ -119,8 +120,7 @@ export default function ViewerPane() {
     if (!sessionId) { setInspect(false) }
   }, [sessionId])
 
-  // A picked vertex's position index goes stale when the mesh changes (refine,
-  // iterate, etc.) — clear the selection so we never highlight the wrong vertex.
+  // A picked vertex's index goes stale when the mesh changes.
   useEffect(() => { setPicked(null); setPickedPos(null) }, [mesh])
 
   return (

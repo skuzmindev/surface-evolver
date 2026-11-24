@@ -6,13 +6,12 @@ export interface MeshData {
   edges: number[][]
   body_cms?: (number[] | null)[]
   facet_colors?: number[]
-  // Periodic (torus) surfaces only, and only when non-zero: edges crossing a
-  // period boundary, which the worker drops because a straight line between
-  // their endpoints would span the whole domain.
+  /** Periodic surfaces only, when non-zero: edges dropped for crossing a period boundary. */
   wrapped_edges_hidden?: number
-  // Periodic surfaces only: facets crossing the cell are drawn unwrapped, so
-  // their shifted corners are appended to `vertices` after the engine's own.
-  // Entry i is the engine position of vertex (vertices.length - length + i).
+  /**
+   * Periodic surfaces only: the unwrapped corners appended after the engine's
+   * vertices. Entry i is the engine position of vertex `vertices.length - length + i`.
+   */
   unwrap_source?: number[]
 }
 
@@ -20,7 +19,7 @@ export interface RunCommandResponse {
   output: string
   energy: number | null
   area: number | null
-  // Whether what the viewer draws differs from the mesh last fetched (#21).
+  /** Whether what the viewer draws differs from the mesh last fetched. */
   geometry_changed?: boolean
 }
 
@@ -36,23 +35,21 @@ export interface TopoResponse {
   energy: number
   energy_delta: number
   area: number
-  // Whether what the viewer draws differs from the mesh last fetched (#21).
+  /** Whether what the viewer draws differs from the mesh last fetched. */
   geometry_changed?: boolean
 }
 
-// No count parameter: only `equi` would use one (worker maps it to `u N`), and
-// one menu click = one pass is the honest behaviour. Repeated passes are `u 5`
-// in the CLI pane. (Formerly backlog item F7.)
+/** One pass of a topology op; repeated passes are `u 5` in the CLI. */
 export async function runTopo(id: string, op: TopoOp): Promise<TopoResponse> {
   return rpc<TopoResponse>('topo', { sessionId: id, op })
 }
 
-// Always requests native SE per-element colours alongside the geometry.
+/** The active surface's mesh, with SE's per-element colours. */
 export async function getMesh(id: string): Promise<MeshData> {
   return rpc<MeshData>('getMesh', { sessionId: id, colors: true })
 }
 
-// attr bits (se_api.h): FIXED=0x40, BOUNDARY=0x80, CONSTRAINT=0x400
+/** `attr` bits (se_api.h): FIXED=0x40, BOUNDARY=0x80, CONSTRAINT=0x400. */
 export interface VertexInfo {
   id: number
   xyz: number[]

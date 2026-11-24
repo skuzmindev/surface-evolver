@@ -19,10 +19,8 @@ export default function EditorPane() {
   const [saving,    setSaving]    = useState(false)
   const [exporting, setExporting] = useState<'dmp' | 'fe' | null>(null)
 
-  // One CodeMirror view for the pane's lifetime. It used to be rebuilt on every
-  // fileContent change (the effect's cleanup destroyed it first), so a
-  // successful Save & Reload reset the cursor and scroll and dropped undo
-  // history (#23).
+  // One CodeMirror view for the pane's lifetime, so a save keeps undo history,
+  // the cursor and the scroll position.
   const extensionsRef = useRef([
     lineNumbers(), drawSelection(), history(), indentOnInput(), bracketMatching(),
     keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -39,9 +37,9 @@ export default function EditorPane() {
     return () => { viewRef.current?.destroy(); viewRef.current = null }
   }, [])
 
-  // Text from outside: a load, a restore, a file switch. Identical text (what a
-  // save writes back) is left alone, keeping history and cursor. Different
-  // text gets a fresh state, so undo can't step back into another file.
+  // Text from outside (load, restore, file switch). Identical text, as a save
+  // writes back, is left alone; different text gets a fresh state, so undo
+  // can't step back into another file.
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
@@ -53,9 +51,8 @@ export default function EditorPane() {
   }, [fileContent])
 
   const handleSave = useCallback(async () => {
-    // Clean buffer: nothing to save, and reloading would discard the evolved
-    // surface (#15). The button is disabled too; this also covers ⌘S.
-    // No session needed: a file that failed to load is fixed exactly this way.
+    // A clean buffer has nothing to save, and a reload would discard the evolved
+    // surface; this also covers ⌘S. No session needed: it's how a broken file is fixed.
     if (!activeFile || saving || !dirty) return
     const content = viewRef.current?.state.doc.toString() ?? ''
     setSaving(true)
@@ -139,9 +136,7 @@ export default function EditorPane() {
         </button>
       </div>
 
-      {/* The editor stays mounted: unmounting it on every session change left
-          CodeMirror attached to a detached node, so the pane came back blank
-          while still marked dirty. Hidden, not removed, when no file is open. */}
+      {/* Hidden, not unmounted, with no file open: CodeMirror must keep its node. */}
       {!activeFile && (
         <div className="flex-1 flex items-center justify-center text-sm text-base-content/30 select-none">
           Load a .fe file to edit

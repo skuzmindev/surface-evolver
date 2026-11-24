@@ -13,23 +13,23 @@ interface Props {
   themeColors:   ThemeColors
 }
 
-// SE default facet colour (WHITE) and CLEAR — treated as "uncoloured", so they
-// take the theme surface colour rather than a literal palette entry.
+/** SE's default facet colour. Treated as uncoloured: it takes the theme surface colour. */
 export const SE_COLOR_WHITE = 15
 
-// Standard 16-colour Surface Evolver / DOS palette, index → [r,g,b] in 0..1.
+/** SE's 16-colour palette, index → [r, g, b] in 0..1. */
 const SE_PALETTE: [number, number, number][] = [
   [0,0,0],[0,0,1],[0,1,0],[0,1,1],[1,0,0],[1,0,1],[0.55,0.27,0.07],[0.75,0.75,0.75],
   [0.5,0.5,0.5],[0.5,0.5,1],[0.5,1,0.5],[0.5,1,1],[1,0.5,0.5],[1,0.5,1],[1,1,0],[1,1,1],
 ]
 function paletteRGB(idx: number, neutral: [number, number, number]): [number, number, number] {
-  if (idx < 0 || idx === SE_COLOR_WHITE) return neutral   // uncoloured → theme surface
+  if (idx < 0 || idx === SE_COLOR_WHITE) return neutral
   return idx < SE_PALETTE.length ? SE_PALETTE[idx] : neutral
 }
 
-// Non-indexed geometry with a flat SE-palette colour per facet (each triangle's
-// three vertices carry the facet colour → flat shading respects script colours).
-// Uncoloured (white/clear) facets use the theme `neutral` colour.
+/**
+ * Non-indexed geometry with each facet's SE colour on all three of its corners,
+ * so shading stays flat per facet. Uncoloured facets take `neutral`.
+ */
 function buildElementColorGeometry(mesh: MeshData, neutral: THREE.Color): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry()
   const nf  = mesh.facets.length
@@ -59,10 +59,7 @@ function buildGeometry(mesh: MeshData): THREE.BufferGeometry {
   return geo
 }
 
-/**
- * Line rendering for edge geometry (the edge overlay). STRING (1-D) files are
- * rejected at load now, so this always draws on top of facet geometry.
- */
+/** The edges on their own, for a mesh with no facets. */
 export function EdgeLines({ mesh, themeColors }: { mesh: MeshData; themeColors: ThemeColors }) {
   const geometry = useMemo(() => {
     const geo = new THREE.BufferGeometry()
@@ -80,9 +77,10 @@ export function EdgeLines({ mesh, themeColors }: { mesh: MeshData; themeColors: 
   )
 }
 
-// Every real engine edge as line segments. drei <Edges> only draws *feature*
-// edges (dihedral angle > threshold), hiding the triangulation edges across
-// coplanar facets — so we render the actual edge list the engine provides.
+/**
+ * Every engine edge drawn over the facets, including those between coplanar
+ * facets, which a feature-edge helper would hide.
+ */
 function EdgeOverlay({ mesh, color }: { mesh: MeshData; color: THREE.Color | string }) {
   const geometry = useMemo(() => {
     const geo = new THREE.BufferGeometry()
@@ -98,8 +96,10 @@ function EdgeOverlay({ mesh, color }: { mesh: MeshData; color: THREE.Color | str
   )
 }
 
-// Sets the raycaster's Points threshold so vertex picking scales with the mesh
-// (default threshold of 1 world-unit makes every point a hit on small meshes).
+/**
+ * Scales the raycaster's point-hit threshold with the mesh; the default of one
+ * world unit makes every point a hit on a small mesh.
+ */
 export function RaycasterConfig({ threshold }: { threshold: number }) {
   const raycaster = useThree(s => s.raycaster)
   useEffect(() => {
@@ -108,7 +108,7 @@ export function RaycasterConfig({ threshold }: { threshold: number }) {
   return null
 }
 
-// Clickable cloud of every vertex; e.index is the vertex's buffer position (vpos).
+/** An invisible, clickable point per vertex; `e.index` is its buffer position (vpos). */
 export function PickPoints({ mesh, onPick }: { mesh: MeshData; onPick: (vpos: number) => void }) {
   const geometry = useMemo(() => {
     const geo = new THREE.BufferGeometry()
@@ -131,7 +131,7 @@ export function PickPoints({ mesh, onPick }: { mesh: MeshData; onPick: (vpos: nu
   )
 }
 
-// Highlight sphere at a single position (the picked vertex).
+/** A highlight sphere on the picked vertex. */
 export function VertexMarker({ position, radius }: { position: number[]; radius: number }) {
   return (
     <mesh position={position as [number, number, number]}>
@@ -141,7 +141,7 @@ export function VertexMarker({ position, radius }: { position: number[]; radius:
   )
 }
 
-// Body centre-of-mass markers.
+/** A marker on each body's centre of mass. */
 export function BodyMarkers({ cms, radius }: { cms: (number[] | null)[]; radius: number }) {
   return (
     <>
@@ -194,11 +194,9 @@ export default function MeshGeometry({ mesh, mode, elementColors, themeColors }:
     )
   }
 
-  // solid — per-element SE colours when present, else the theme surface.
-  // Keyed per mode and colour state: X-ray and solid sit at the same place in
-  // the tree, so React reused one material, and three.js only applies a
-  // vertexColors change on a shader recompile, which never happened. The
-  // facets stayed grey after a trip through X-ray. A new key, a new material.
+  // Solid: SE colours when present, else the theme surface. Keyed per mode and
+  // colour state because X-ray and solid share a tree position, and three.js
+  // applies a vertexColors change only on a shader recompile.
   return (
     <mesh geometry={geometry}>
       <meshPhongMaterial

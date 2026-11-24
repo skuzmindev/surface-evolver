@@ -1,20 +1,13 @@
-//! SE worker sidecar.
-//!
-//! Spawned once per session by src-tauri/src/worker.rs. Owns one libse
-//! instance — `se_init` cannot run twice in a process, so the manager kills and
-//! respawns this binary per loaded file.
+//! The SE worker sidecar: one libse per process, so the app spawns a fresh one
+//! for every loaded file (src-tauri/src/worker.rs).
 //!
 //! Protocol: line-delimited JSON on stdin/stdout.
 //!   stdin  <- {"cmd":"load"|"run"|"mesh"|..., ...}
 //!   stdout -> {"type":"result","ok":true|false, ...}
 //!          -> {"type":"fatal","error":...}  if dlopen / se_init fails
 //!
-//! Cancellation: the manager sends SIGINT, which aborts an iteration and keeps
-//! the surface (libse's handler, #35); SIGKILL only if that doesn't stop it.
-//!
-//! Ported from the retired bun/TypeScript worker. Output is semantically identical;
-//! serde_json renders an integral f64 as `2.0` where JSON.stringify wrote `2`,
-//! which parses to the same JS number.
+//! The app cancels with SIGINT, which aborts an iteration and keeps the surface,
+//! and kills the process only if that doesn't stop it.
 
 mod ffi;
 mod handlers;
@@ -27,27 +20,23 @@ use std::sync::{Mutex, OnceLock};
 /// The JSON reply channel. Not plain stdout: see `take_json_pipe`.
 static PIPE: OnceLock<Mutex<Box<dyn Write + Send>>> = OnceLock::new();
 
-/// SE printf()s some output (itdebug, a few diagnostics) straight to fd 1,
-/// which is the JSON pipe; one stray line used to end the session (#18).
-/// Keep a private dup of the pipe for replies, then point fd 1 at stderr, so
-/// engine output lands in the app's log instead of the protocol.
+/// Takes the reply pipe off fd 1. SE printf()s some output straight to fd 1, and
+/// one stray line would corrupt the protocol, so replies go to a private dup and
+/// fd 1 is pointed at stderr, where engine output lands in the app's log.
 fn take_json_pipe() -> Box<dyn Write + Send> {
     use std::os::fd::AsFd;
     extern "C" { fn dup2(src: i32, dst: i32) -> i32; }
     let pipe = std::io::stdout().as_fd().try_clone_to_owned().expect("dup stdout");
     if unsafe { dup2(2, 1) } < 0 {
-        // Can't move fd 1: replies still work, engine printf still leaks.
         eprintln!("se-worker: dup2(stderr, stdout) failed; engine output may corrupt IPC");
     }
     Box::new(std::fs::File::from(pipe))
 }
 
-/// SE's prompt() reads its answer from stdin once the datafile's leftover
-/// lines run out, and stdin is the IPC pipe: a prompt reached any way the
-/// INTERACTIVE_CMDS guard can't see (`j; g`, a procedure) blocked on it, then
-/// swallowed the next request as its answer (#41). Requests come in on a
-/// private dup of the pipe; fd 0 becomes /dev/null, so every engine prompt
-/// gets EOF at once, which prompt() already returns to its callers.
+/// Takes the request pipe off fd 0. SE's prompt() reads stdin, so a prompt the
+/// INTERACTIVE_CMDS guard can't see (`j; g`, a procedure) would block on the pipe
+/// and swallow the next request. Requests come in on a private dup, and fd 0
+/// becomes /dev/null, where every prompt gets EOF at once and returns.
 fn take_ipc_input() -> std::fs::File {
     use std::os::fd::{AsFd, AsRawFd};
     extern "C" { fn dup2(src: i32, dst: i32) -> i32; }
@@ -59,10 +48,10 @@ fn take_ipc_input() -> std::fs::File {
     std::fs::File::from(ipc)
 }
 
+/// Writes one reply line in a single `write_all`. The pipe is an unbuffered
+/// `File`, and writing through `Display` would cost a syscall per JSON token.
 fn send(v: &Value) {
     let mut out = PIPE.get_or_init(|| Mutex::new(take_json_pipe())).lock().unwrap_or_else(|e| e.into_inner());
-    // One write: `writeln!(out, "{v}")` on this unbuffered File issued a write
-    // syscall per JSON token, ~95% of a 98k-facet mesh reply's 940 ms.
     let mut line = serde_json::to_vec(v).unwrap_or_default();
     line.push(b'\n');
     let _ = out.write_all(&line);
@@ -75,8 +64,7 @@ fn fatal(error: String) -> ! {
 }
 
 fn main() {
-    // Before dlopen: nothing may reach fd 1 until it has been moved, and
-    // nothing may read fd 0 until the IPC input has been taken off it.
+    // Before dlopen: nothing may write fd 1 or read fd 0 until the pipes are moved.
     PIPE.get_or_init(|| Mutex::new(take_json_pipe()));
     let ipc_input = std::io::BufReader::new(take_ipc_input());
     let lib_path = std::env::var("SE_LIB_PATH").unwrap_or_else(|_| "/app/libse.so".to_string());
@@ -97,16 +85,15 @@ fn main() {
         last_mesh_hash: None,
     };
 
-    // Handlers are synchronous, so requests serialise naturally: a long se_run
-    // blocks the loop, exactly as in the TS worker.
+    // Handlers are synchronous, so requests serialise: a long se_run blocks the loop.
     for line in ipc_input.lines() {
         let line = match line {
             Ok(l) => l,
-            Err(_) => break, // stdin closed mid-read
+            Err(_) => break,
         };
         let line = line.trim();
         if line.is_empty() {
-            continue; // blank lines get no response
+            continue;
         }
 
         let req: Value = match serde_json::from_str(line) {
@@ -128,8 +115,7 @@ fn main() {
             other => json!({ "ok": false, "error": format!("unknown cmd: {other}") }),
         };
 
-        // Merge into {"type":"result", ...result} with type first, matching the
-        // TS spread order.
+        // {"type":"result", ...result}, with type first.
         let mut msg = serde_json::Map::new();
         msg.insert("type".into(), json!("result"));
         if let Value::Object(m) = result {
@@ -139,5 +125,4 @@ fn main() {
         }
         send(&Value::Object(msg));
     }
-    // stdin EOF -> exit 0
 }

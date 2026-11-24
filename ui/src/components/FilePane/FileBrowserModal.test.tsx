@@ -15,7 +15,7 @@ function setup() {
 }
 
 describe('FileBrowserModal', () => {
-  it('is a keyboard-usable dialog: focus inside, Tab wraps, Escape closes (#25)', async () => {
+  it('is a keyboard-usable dialog: focus inside, Tab wraps, Escape closes', async () => {
     answerRpc({ listFiles: ['cube.fe', 'phelanc.fe'] })
     const { onPick, onClose } = setup()
     const user = userEvent.setup()

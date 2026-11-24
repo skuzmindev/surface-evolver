@@ -1,26 +1,19 @@
-//! Guards the one class of bug the compiler cannot catch here.
+//! Checks that `src/ffi.rs` matches `engine/bindings/c/se_api.h`. A mismatched
+//! signature is undefined behaviour at runtime, not a compile error, so a header
+//! change not mirrored in Rust must fail here instead.
 //!
-//! `src/ffi.rs` declares `unsafe extern "C"` signatures for libse. Nothing
-//! checks them against `engine/bindings/c/se_api.h` — a mismatched argument or
-//! return type is undefined behaviour at runtime, not a compile error. This
-//! test parses both files and asserts they agree, so a change to the C header
-//! that isn't mirrored in Rust fails `cargo test` instead of corrupting memory
-//! in production.
-//!
-//! It deliberately does not try to be a full C parser: the facade uses a small,
-//! regular vocabulary (int / double / void / char* / int* / double*), and this
-//! only needs to catch drift in it.
+//! Not a full C parser: the facade uses a small vocabulary (int, double, void,
+//! char*, int*, double*), and this only has to catch drift in it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn repo_file(rel: &str) -> String {
-    // ../.. — this crate lives at src-tauri/worker/, so the repo root is two up.
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
 }
 
-/// Map a C parameter to the Rust spelling used in ffi.rs.
+/// A C parameter in the Rust spelling ffi.rs uses.
 fn c_param_to_rust(p: &str) -> String {
     let p = p.trim();
     if p.contains('*') {
@@ -108,9 +101,7 @@ fn ffi_signatures_match_the_c_header() {
     let header = parse_header(&repo_file("engine/bindings/c/se_api.h"));
     let rust = parse_rust(&repo_file("src-tauri/worker/src/ffi.rs"));
 
-    // Floor, not a count: catches a parser that silently matches nothing. Raise
-    // it if the facade grows; it was 30 when se_api.h exported 37, and dropped
-    // to 20 when the physics/named-quantity accessors were cut (37 → 27).
+    // A floor, not a count: catches a parser that silently matches nothing.
     assert!(header.len() > 20, "header parse produced only {} decls — parser is broken", header.len());
 
     let mut problems = Vec::new();

@@ -19,23 +19,18 @@ export const feLanguage = StreamLanguage.define<State>({
   startState: (): State => ({ inBlockComment: false }),
 
   token(stream: StringStream, state: State): string | null {
-    // continue block comment
     if (state.inBlockComment) {
       if (stream.match('*/')) { state.inBlockComment = false; return 'comment' }
       stream.next()
       return 'comment'
     }
 
-    // whitespace
     if (stream.eatSpace()) return null
 
-    // line comment
     if (stream.match('//')) { stream.skipToEnd(); return 'comment' }
 
-    // block comment open
     if (stream.match('/*')) { state.inBlockComment = true; return 'comment' }
 
-    // string literal
     if (stream.peek() === '"') {
       stream.next()
       while (!stream.eol()) {
@@ -46,16 +41,13 @@ export const feLanguage = StreamLanguage.define<State>({
       return 'string'
     }
 
-    // number (int or float, optional sign handled by operator rule)
     if (stream.match(/^-?\d+(\.\d*)?([eE][+-]?\d+)?/)) return 'number'
     if (stream.match(/^-?\.\d+([eE][+-]?\d+)?/))       return 'number'
 
-    // identifier or keyword
     if (stream.match(/^[a-zA-Z_][a-zA-Z0-9_]*/)) {
       return KEYWORDS.has(stream.current().toLowerCase()) ? 'keyword' : 'variableName'
     }
 
-    // operators / punctuation
     if (stream.match(/^[=+\-*/^<>!&|%()[\]{},;:]/)) return 'operator'
 
     stream.next()

@@ -1,9 +1,8 @@
-//! SE subprocess manager: spawns, talks to, and kills the se-worker sidecar.
+//! Spawns, talks to and kills the se-worker sidecar.
 //!
-//! Each load kills the previous worker and spawns a fresh `se-worker` sidecar
-//! that owns exactly one libse instance (se_init cannot run twice in one
-//! process). The `io` mutex serialises all request/response I/O; the separate
-//! `proc` mutex lets a new load kill a hung worker without waiting on `io`.
+//! Each load starts a fresh worker, because libse can't be initialised twice in
+//! one process. `io` serialises request/response I/O; the separate `proc` lets a
+//! load or Stop reach a hung worker without waiting on `io`.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -21,23 +20,24 @@ pub struct WorkerIo {
 
 #[derive(Default)]
 pub struct Manager {
-    /// Held for the duration of every request/response exchange.
+    /// Held for a whole request/response exchange.
     pub io: Mutex<Option<WorkerIo>>,
-    /// Process handle only — kill() takes this without touching `io`.
+    /// The process handle, so `kill` never touches `io`.
     pub proc: Mutex<Option<Child>>,
-    /// Requests in flight, counting those still waiting for `io`. interrupt()
-    /// waits for this to reach zero: an unlocked `io` alone also happens in
-    /// the gap between a finished request and the next one queued behind it.
+    /// Requests in flight, including those still waiting for `io`. `interrupt`
+    /// waits for zero: an unlocked `io` also occurs between a finished request
+    /// and the next one queued behind it.
     pending: AtomicUsize,
 }
 
-/// Poison here means an earlier RPC panicked while holding the guard. Every
-/// thing we lock is an `Option` or a map that stays structurally valid, so
-/// recovering the inner value beats `unwrap()` bricking every later call.
+/// Locks `m`, recovering from poison: a panic mid-lock leaves these `Option`s
+/// valid, and `unwrap()` would break every later call.
 pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Reads the worker's next result line, skipping blank and progress lines.
+/// EOF means the worker died.
 fn read_result(stdout: &mut BufReader<ChildStdout>) -> Result<Value, String> {
     loop {
         let mut line = String::new();
@@ -56,14 +56,14 @@ fn read_result(stdout: &mut BufReader<ChildStdout>) -> Result<Value, String> {
             serde_json::from_str(line).map_err(|e| format!("SE worker sent bad JSON: {e}"))?;
         match msg["type"].as_str() {
             Some("result") => return Ok(msg),
-            // dlopen / se_init failure — surface the real cause.
+            // dlopen or se_init failed.
             Some("fatal") => {
                 return Err(format!(
                     "SE engine failed to start: {}",
                     msg["error"].as_str().unwrap_or("unknown error")
                 ))
             }
-            _ => continue, // progress lines are dropped
+            _ => continue,
         }
     }
 }
@@ -79,27 +79,25 @@ fn check_result(msg: &Value) -> Result<(), String> {
 }
 
 impl Manager {
+    /// Kills and reaps the worker. A request blocked on its output then gets EOF.
     pub fn kill(&self) {
         if let Some(mut child) = lock(&self.proc).take() {
             let _ = child.kill();
-            let _ = child.wait(); // reap; blocked reader gets EOF and errors out
+            let _ = child.wait();
         }
     }
 
-    /// Ask a running command to stop while keeping the surface (#35). SE's
-    /// SIGINT handler aborts the command ("ERROR 2073: Command aborted due
-    /// to user interrupt"), and the worker and its partly evolved surface
-    /// survive. Returns true once no request holds `io` (also when nothing
-    /// was running: an idle worker gets no signal), false if the command
-    /// did not stop within `grace`, so the caller can fall back to kill().
-    /// Like kill(), takes only `proc` and never waits on `io`.
+    /// Asks the running command to stop while keeping the surface: SE's SIGINT
+    /// handler aborts it with ERROR 2073, and the worker survives. Returns true
+    /// once no request is in flight (an idle worker gets no signal), false if
+    /// the command didn't stop within `grace`, so the caller can kill instead.
+    /// Takes only `proc`, never `io`.
     ///
-    /// SE only honours SIGINT while it iterates: one that lands during a mesh
-    /// fetch is lost, and a `g` queued behind the fetch then runs on. So the
-    /// signal is re-sent every RESEND until the worker is idle. A stray one at
-    /// an idle worker is harmless (measured: the next command runs normally).
-    // ponytail: a request started *after* Stop also counts as pending; the UI
-    // blocks new commands while one runs, so that isn't reachable from it.
+    /// SE honours SIGINT only while it iterates, so one that lands during a mesh
+    /// fetch is lost and a `g` queued behind it runs on. The signal is re-sent
+    /// every `RESEND` until idle; a stray one at an idle worker is harmless.
+    // shortcut: a request started after Stop also counts as pending; the UI blocks
+    // new commands while one runs, so it can't happen from there.
     pub fn interrupt(&self, grace: Duration) -> bool {
         let idle = || self.pending.load(Ordering::SeqCst) == 0;
         if idle() {
@@ -124,12 +122,15 @@ impl Manager {
         false
     }
 
-    /// Whether a worker process is alive (or at least not yet reaped). Takes
-    /// only `proc`, like kill(), so it never waits behind a running command.
+    /// Whether a worker process is alive (or not yet reaped). Takes only `proc`,
+    /// so it never waits behind a running command.
     pub fn has_worker(&self) -> bool {
         lock(&self.proc).is_some()
     }
 
+    /// Spawns a fresh worker for `session_id` and loads `fe_path` into it,
+    /// killing any previous worker. A failed load kills the new worker too:
+    /// engine state after a failed load is undefined.
     pub fn load_session(
         &self,
         session_id: &str,
@@ -137,13 +138,11 @@ impl Manager {
         worker_bin: &PathBuf,
         lib_path: &PathBuf,
     ) -> Result<Value, String> {
-        // Kill BEFORE taking `io`: a hung command holds `io` until its blocked
-        // read fails, so killing first breaks the deadlock.
+        // Kill before taking `io`: a hung command holds `io` until its read fails.
         self.kill();
         let mut io = lock(&self.io);
-        // And again: a worker spawned by another load while we waited for `io`
-        // (a startup restore) would otherwise be overwritten in `proc` below
-        // without being killed, and outlive the app.
+        // Again: another load (a startup restore) may have spawned one meanwhile,
+        // which would otherwise be overwritten in `proc` and outlive the app.
         self.kill();
         *io = None;
 
@@ -168,17 +167,15 @@ impl Manager {
             Ok(msg)
         })();
         if result.is_err() {
-            // Engine state after a failed se_load is undefined — don't leave
-            // this worker registered as the active session.
             *io = None;
             self.kill();
         }
         result
     }
 
-    /// Send `req` to the active worker for `session_id`, await its result line.
+    /// Sends `req` to the worker serving `session_id` and returns its result.
     pub fn request(&self, session_id: &str, req: Value) -> Result<Value, String> {
-        // Counted before waiting for `io`, so a queued request is never idle.
+        // Counted before waiting for `io`, so a queued request never looks idle.
         self.pending.fetch_add(1, Ordering::SeqCst);
         struct Done<'a>(&'a AtomicUsize);
         impl Drop for Done<'_> { fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); } }
@@ -200,9 +197,8 @@ impl Manager {
                 Ok(msg)
             }
             Err(e) => {
-                // Only an EOF read means the worker actually died — a pipe error
-                // or a bad JSON line leaves it running. Reap it either way, or it
-                // holds libse until the next load (or forever, if there isn't one).
+                // Reap on any read error, not just EOF, or a live worker holds
+                // libse until the next load.
                 *io = None;
                 self.kill();
                 Err(e)

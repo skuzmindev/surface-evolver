@@ -5,6 +5,7 @@ import { useStore } from '../../store/useStore'
 import { useMenuAction } from '../../hooks/useMenuAction'
 import FileBrowserModal from './FileBrowserModal'
 
+/** The open-files sidebar: loads, restores, reloads and closes datafiles. */
 export default function FilePane() {
   const {
     sessionId, activeFile, openFiles,
@@ -18,13 +19,12 @@ export default function FilePane() {
   const clearError = (file: string) =>
     setFileErrors(prev => { const n = { ...prev }; delete n[file]; return n })
 
-  // Auto-restore the previous run's evolved surface (once, on first mount).
+  // Restore the previous run's surface, once, on first mount.
   useEffect(() => {
     let cancelled = false
     getRestore().then(s => {
       if (cancelled || !s) return
-      // User already opened a file while restore was loading — their session
-      // wins (the backend also guards this; see getRestore in rpc.rs).
+      // A file the user opened meanwhile wins.
       if (useStore.getState().sessionId) return
       setSession(s.session_id, s.fe_file)
       setStats(s.energy, s.area)
@@ -35,7 +35,7 @@ export default function FilePane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Native File ▸ Reload Surface — re-create the session for the active file.
+  // File ▸ Reload Surface: a fresh session for the active file.
   useMenuAction(async a => {
     if (a !== 'file:reload' || !activeFile || loadingFile) return
     setLoadingFile(activeFile)
@@ -56,8 +56,7 @@ export default function FilePane() {
 
   async function handleSelect(file: string) {
     if (loadingFile) return
-    // `!sessionId` lets the active file be re-opened after a cancel killed its
-    // worker — the tab stays, but there is no live session behind it.
+    // With no session (Stop killed the worker) the active file can be reopened.
     if (activeFile === file && sessionId && !fileErrors[file]) return
     clearError(file)
     setLoadingFile(file)
@@ -75,8 +74,7 @@ export default function FilePane() {
       const msg = (err instanceof Error ? err.message : String(err)).replace(/^Error:\s*/i, '')
       setFileErrors(prev => ({ ...prev, [file]: msg }))
       appendLog(`[error] ${file}: ${msg}`)
-      // Still this file in the editor: a file that fails to load is exactly
-      // the one that needs editing, and Save must not write to another file.
+      // Keep it in the editor: a file that fails to load is the one to fix.
       setActiveFile(file)
     } finally {
       setLoadingFile(null)
@@ -89,9 +87,7 @@ export default function FilePane() {
 
   function closeFile(e: React.MouseEvent, file: string) {
     e.stopPropagation()
-    // Closing the live tab drops its session id, which also disables Stop: a
-    // running command would have run on with no way to stop it (#24). Stop it
-    // first. With nothing running, cancel is a no-op.
+    // Closing the live tab disables Stop, so stop a running command first.
     if (file === activeFile && sessionId) cancelSession().catch(() => {})
     clearError(file)
     removeOpenFile(file)
@@ -127,16 +123,12 @@ export default function FilePane() {
 
             return (
               <li key={f} className={isBusy ? 'opacity-40 pointer-events-none' : ''}>
-                {/* A row, not an <a>: links without href aren't keyboard
-                    reachable, and the close button can't nest inside a button,
-                    so select and close are sibling buttons (#25). */}
+                {/* Select and close are sibling buttons: a button can't hold a button. */}
                 <div
                   title={hasError ? fileErrors[f] : f}
                   className={[
                     'flex items-center gap-1 py-0 font-mono text-xs leading-none rounded',
-                    // Light tinted highlight for the selected row instead of daisyUI's
-                    // `active` (which fills it with the dark neutral colour → in light
-                    // mode the row goes dark and the ✕ is hard to see).
+                    // A light tint, not daisyUI's dark `active` fill, which hides the ✕.
                     isActive && !hasError ? '!bg-primary/15 text-base-content font-medium' : '',
                     hasError ? 'text-error hover:text-error' : '',
                   ].join(' ')}

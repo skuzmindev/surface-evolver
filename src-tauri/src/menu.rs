@@ -1,11 +1,8 @@
-//! Native application menu — port of src/main/src/app-menu.ts.
-//! Custom item ids are the action strings; clicks are emitted to the webview
-//! as a "se-menu" event, re-dispatched there as the CustomEvent('se-menu')
-//! useMenuAction already listens for.
+//! The native application menu. Custom item ids are action strings, emitted to
+//! the webview as an "se-menu" event that `useMenuAction` handles.
 //!
-//! Platform notes: the app submenu (About/Hide/…), the Window submenu, and
-//! the Undo/Redo/Hide predefined items are macOS-only in muda — on Linux we
-//! fold About + Quit into File and skip the rest.
+//! The app and Window submenus and the Undo/Redo/Hide items are macOS-only in
+//! muda, so on Linux About and Quit move into File and the rest is skipped.
 
 use tauri::menu::{AboutMetadata, Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{App, Emitter, Wry};
@@ -105,19 +102,18 @@ pub fn build(app: &App) -> tauri::Result<Menu<Wry>> {
     menu.build()
 }
 
+/// Forwards a click on one of our items to the webview. Predefined items handle
+/// themselves; ours are the ids containing a ":".
 pub fn on_event(app: &tauri::AppHandle, id: &str) {
-    // Predefined items handle themselves; anything with a ":" is ours.
     if id.contains(':') {
         let _ = app.emit("se-menu", id);
     }
 }
 
-/// The accelerator for a Run-menu item that changes the surface, or none off
-/// macOS (#28). There CmdOrCtrl is Ctrl, and Ctrl+R/U/E/G are keys people
-/// press while typing (readline keys in the CLI, CodeMirror's Mod-u), so a
-/// native accelerator would run an irreversible refine or equiangulate
-/// mid-sentence. On macOS they are Cmd, which typing never sends. The items
-/// stay in the menu either way.
+/// The accelerator for a Run-menu item that changes the surface, on macOS only.
+/// Elsewhere CmdOrCtrl is Ctrl, and Ctrl+R/U/E/G are typing keys (readline in
+/// the CLI, CodeMirror), so an accelerator would run an irreversible refine
+/// mid-sentence. The items stay in the menu either way.
 fn surface_op_accel(accel: &'static str, macos: bool) -> Option<&'static str> {
     macos.then_some(accel)
 }
@@ -128,7 +124,6 @@ mod tests {
 
     #[test]
     fn surface_ops_have_no_accelerator_on_linux() {
-        // #28: on Linux CmdOrCtrl is Ctrl, and Ctrl+R/U/E/G are typing keys.
         assert_eq!(surface_op_accel("CmdOrCtrl+R", true), Some("CmdOrCtrl+R"));
         assert_eq!(surface_op_accel("CmdOrCtrl+R", false), None);
     }

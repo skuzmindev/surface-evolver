@@ -1,10 +1,4 @@
-//! Command handlers, one per worker command. Originally a 1:1 port of the
-//! retired bun/TypeScript worker, whose response shapes they keep.
-//!
-//! Output shapes are semantically identical to the TS worker (same keys, same
-//! value types, same present/absent behaviour). Byte-identity is not a goal:
-//! serde_json prints an integral f64 as `2.0` where JSON.stringify prints `2`,
-//! and both parse to the same JS number on the far side.
+//! Command handlers, one per worker command, each returning its JSON reply.
 
 use crate::ffi::Se;
 use serde_json::{json, Map, Value};
@@ -20,9 +14,9 @@ const TOPO_NAMES: [&str; 11] = [
     "facet_dissolve", "vertex_pop", "edge_pop", "edgeswap", "fix", "unfix",
 ];
 
-/// Bare single-letter SE commands whose handlers call prompt() for keyboard
-/// input. stdin here is the IPC pipe, so they would block forever. A compound
-/// like "f; g" still escapes this check — same limitation as the TS worker.
+/// Bare single-letter SE commands that prompt for keyboard input, refused with a
+/// clear message. A compound like "f; g" escapes this check; its prompt gets EOF
+/// instead (see `take_ipc_input` in main.rs).
 const INTERACTIVE_CMDS: [&str; 18] = [
     "a", "b", "f", "G", "J", "j", "k", "K", "l", "m", "n", "p", "t", "w", "W", "y", "Z", "F",
 ];
@@ -32,8 +26,8 @@ pub struct Worker {
     pub out_buf: Vec<u8>,
     pub err_buf: Vec<u8>,
     pub loaded_file: Option<String>,
-    /// geometry_hash() of the mesh last sent, so a reply can say whether the
-    /// viewer needs a new one (#21).
+    /// `geometry_hash` of the mesh last sent, so a reply can say whether the
+    /// viewer needs a new one.
     pub last_mesh_hash: Option<u64>,
 }
 
@@ -45,40 +39,37 @@ fn cstring(s: &str) -> Vec<u8> {
     v
 }
 
-/// `s` as an SE string literal. SE's lexer reads `\x` as an escape
-/// (`reduce_string`: `\\` is a backslash, `\q` a double quote, anything else
-/// drops the backslash), so any backslash in a path was lost (#26: a temp
-/// directory whose name contains one).
-/// Never ends in an escaped backslash for the paths we pass: SE's lexer would
-/// then take the closing quote as escaped.
+/// `s` as an SE string literal. SE's lexer reads `\x` as an escape (`\\` is a
+/// backslash, `\q` a double quote, anything else drops the backslash), so both
+/// are escaped. The paths passed here never end in a backslash, which would make
+/// the lexer read the closing quote as escaped.
 fn se_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\q"))
 }
 
-/// Decode a fixed C buffer up to its NUL. Lossy: SE writes raw bytes with no
-/// UTF-8 guarantee, and JS's TextDecoder substitutes U+FFFD rather than failing.
+/// Decodes a C buffer up to its NUL, lossily: SE writes raw bytes with no UTF-8
+/// guarantee.
 fn cstr(buf: &[u8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
 impl Worker {
+    /// Drains captured stdout. A full buffer means the rest was dropped, and the
+    /// API can't say how much, so the text says it was truncated.
     fn pop_output(&mut self) -> String {
         let n = unsafe { (self.se.pop_output)(self.out_buf.as_mut_ptr(), OUT_BUF_SIZE as i32) };
         if n <= 0 { return String::new() }
         let mut s = String::from_utf8_lossy(&self.out_buf[..n as usize]).into_owned();
-        // A full buffer means se_pop_output dropped the rest (#31). The API
-        // cannot say how much, so say that it happened.
-        // ponytail: output of exactly OUT_BUF_SIZE-1 bytes is flagged too.
+        // shortcut: output of exactly OUT_BUF_SIZE-1 bytes is flagged as truncated too.
         if n as usize >= OUT_BUF_SIZE - 1 {
             s.push_str("\n… [output truncated at 256 KB]\n");
         }
         s
     }
 
-    /// What a successful command printed, plus any warnings it raised. SE
-    /// writes warnings to errout; left there, they used to be glued onto the
-    /// next failure's message instead of this reply (#30).
+    /// What a successful command printed, plus any warnings it raised. SE writes
+    /// those to errout, where they'd otherwise end up in the next failure's message.
     fn command_output(&mut self) -> String {
         let mut s = self.pop_output();
         s.push_str(&self.pop_errout());
@@ -96,8 +87,8 @@ impl Worker {
         unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
     }
 
-    /// popErrout() || lastError() || fallback — the TS `||` chain, so an empty
-    /// errout falls through rather than being reported as an empty message.
+    /// The best error message available: errout, else the API's last error, else
+    /// `fallback`. An empty message falls through to the next.
     fn se_error(&mut self, fallback: &str) -> String {
         let e = self.pop_errout();
         if !e.is_empty() { return e }
@@ -107,10 +98,9 @@ impl Worker {
     }
 
     /// A cheap fingerprint of exactly what the viewer draws: vertex positions,
-    /// facets, edges and their colours (#21). FNV-1a over the raw buffers:
-    /// milliseconds even on a refined surface, against seconds for the mesh
-    /// JSON. Energy alone wouldn't do: `set facet color` changes the picture
-    /// and leaves it unchanged.
+    /// facets, edges and their colours. FNV-1a over the raw buffers, far cheaper
+    /// than sending the mesh. Energy alone wouldn't do: `set facet color` changes
+    /// the picture but not the energy.
     fn geometry_hash(&self) -> u64 {
         fn fold(h: &mut u64, bytes: &[u8]) {
             for b in bytes { *h ^= *b as u64; *h = h.wrapping_mul(0x0100_0000_01b3); }
@@ -151,9 +141,8 @@ impl Worker {
             Some(p) => p.to_string(),
             None => return json!({ "ok": false, "error": "path is required" }),
         };
-        // Resolve relative includes (e.g. crystal.fe's `Wulff "octa.wlf"`)
-        // against the datafile's own directory; the engine opens them relative
-        // to the CWD. Failure is deliberately swallowed.
+        // The engine opens relative includes (crystal.fe's `Wulff "octa.wlf"`)
+        // against the CWD, so move to the datafile's directory. Failure is ignored.
         if let Some(dir) = std::path::Path::new(&path).parent() {
             let _ = std::env::set_current_dir(dir);
         }
@@ -164,15 +153,11 @@ impl Worker {
             return json!({ "ok": false, "se_error": msg });
         }
         self.loaded_file = Some(path);
-        // What the datafile's `read` section printed, plus any warning or the
-        // error that abandoned it. Popped here so it belongs to this reply,
-        // not the next command's.
+        // The `read` section's output, popped now so it belongs to this reply.
         let output = self.command_output();
 
         let sdim = unsafe { (self.se.get_sdim)() };
-        // Bounding box is the one sdim-wide buffer in the API. Guard against a
-        // non-positive sdim so we never allocate 0/negative and hand C a
-        // dangling pointer (the TS hits a RangeError here instead).
+        // The one sdim-wide buffer: a non-positive sdim must not size an allocation.
         let (bbox_min, bbox_max) = if sdim > 0 {
             let mut lo = vec![0f64; sdim as usize];
             let mut hi = vec![0f64; sdim as usize];
@@ -236,21 +221,20 @@ impl Worker {
 
     // ── mesh ────────────────────────────────────────────────────────────────
 
+    /// The mesh the viewer draws: vertices, facets, visible edges, body data, and
+    /// colours when asked.
     pub fn mesh(&mut self, req: &Value) -> Value {
         let want_colors = req["colors"].as_bool().unwrap_or(false);
         self.last_mesh_hash = Some(self.geometry_hash());
 
-        // se_get_vertices writes a FIXED stride of 3 regardless of sdim (see
-        // se_api.h) — do not size this by sdim.
+        // se_get_vertices always writes stride 3, whatever sdim: don't size by sdim.
         let vcount = unsafe { (self.se.get_vertex_count)() };
         let mut vertices: Vec<Value> = Vec::new();
         let mut vertex_ids: Vec<i32> = Vec::new();
         let mut vbuf = vec![0f64; vcount.max(0) as usize * 3];
         let mut idbuf = vec![0i32; vcount.max(0) as usize];
         if vcount > 0 {
-            // Clamp: the loop indexes vbuf, so trust the buffer size over the
-            // C return value. se_api.c never exceeds max_count, but an
-            // out-of-range return here would be an abort (panic = "abort").
+            // Clamp to the buffer: an out-of-range return would index past it and abort.
             let vn = unsafe { (self.se.get_vertices)(vbuf.as_mut_ptr(), vcount) }.clamp(0, vcount);
             unsafe { (self.se.get_vertex_ids)(idbuf.as_mut_ptr(), vcount) };
             for i in 0..vn.max(0) as usize {
@@ -265,13 +249,11 @@ impl Worker {
         if fcount > 0 {
             let mut fbuf = vec![0i32; fcount as usize * 3];
             let fn_ = unsafe { (self.se.get_facets)(fbuf.as_mut_ptr(), fcount) }.clamp(0, fcount);
-            // Periodic surfaces (#17): a facet crossing the cell has corners on
-            // opposite sides of the domain. Draw it whole: any corner whose
-            // unwrapped position differs from the shared vertex becomes an
-            // appended duplicate, mapped back to its engine vertex through
-            // `unwrap_source` so picking still resolves. 0 rows when not periodic.
-            // ponytail: one duplicate per facet corner, not shared between
-            // facets; dedupe by (vertex, shift) if mesh size ever matters.
+            // Periodic surfaces: a facet crossing the cell would span the domain.
+            // A corner whose unwrapped position differs from its vertex becomes an
+            // appended duplicate, mapped back through `unwrap_source` for picking.
+            // shortcut: one duplicate per facet corner, not shared between facets;
+            // dedupe by (vertex, shift) if mesh size ever matters.
             let mut cbuf = vec![0f64; fcount as usize * 9];
             let cn = unsafe { (self.se.get_facet_coords)(cbuf.as_mut_ptr(), fcount) }.clamp(0, fn_) as usize;
             for i in 0..fn_.max(0) as usize {
@@ -291,12 +273,8 @@ impl Worker {
         }
 
         let ecount = unsafe { (self.se.get_edge_count)() };
-        // Periodic surfaces: an edge that crosses a period boundary has no
-        // honest straight-line form — drawn as-is it spans the whole domain
-        // (103 of 368 edges in phelanc.fe, audit item F1). Drop those rather than
-        // draw a lie. Read-only: `se_get_edge_wraps` mutates nothing, unlike
-        // SE's `detorus`, which stays available through `run`.
-        // Returns 0 for a non-periodic surface, so this is a no-op there.
+        // Periodic surfaces: an edge crossing a period boundary has no honest
+        // straight-line form, so it is dropped rather than drawn across the domain.
         let mut wraps = vec![0i32; ecount.max(0) as usize];
         let wn = if ecount > 0 {
             unsafe { (self.se.get_edge_wraps)(wraps.as_mut_ptr(), ecount) }.clamp(0, ecount)
@@ -317,10 +295,9 @@ impl Worker {
             }
         }
 
-        // Keys are 1-based strings for display; body_cms stays a 0-based array.
-        // Both index the same FOR_ALL_BODIES order — different labelling, not a
-        // mismatch. Map preserves insertion order (serde_json preserve_order),
-        // so "9" precedes "10" as in JS.
+        // Volumes and pressures keyed by 1-based body number, in body order
+        // (serde_json's preserve_order keeps "9" before "10"); body_cms is a 0-based
+        // array in the same order.
         let bcount = unsafe { (self.se.get_body_count)() };
         let mut body_volumes = Map::new();
         let mut body_pressures = Map::new();
@@ -349,7 +326,7 @@ impl Worker {
         out.insert("body_pressures".into(), Value::Object(body_pressures));
         out.insert("body_cms".into(), json!(body_cms));
 
-        // Colour keys are absent entirely unless requested (not null).
+        // Colour keys are absent unless requested, not null.
         if want_colors {
             let mut facet_colors: Vec<i32> = Vec::new();
             let mut edge_colors: Vec<i32> = Vec::new();
@@ -364,7 +341,7 @@ impl Worker {
             if ecount > 0 {
                 let mut ec = vec![0i32; ecount as usize];
                 let cn = unsafe { (self.se.get_edge_colors)(ec.as_mut_ptr(), ecount) };
-                // Same skip as `edges`, so index i stays aligned across both.
+                // Same skip as `edges`, so the two stay aligned.
                 for i in 0..cn.clamp(0, ecount) as usize {
                     if wn > 0 && wraps[i] != 0 {
                         continue;
@@ -375,11 +352,10 @@ impl Worker {
             out.insert("facet_colors".into(), json!(facet_colors));
             out.insert("edge_colors".into(), json!(edge_colors));
         }
-        // Only present when something was actually dropped — the UI surfaces it
-        // so the omission is visible rather than silent.
         if !unwrap_source.is_empty() {
             out.insert("unwrap_source".into(), json!(unwrap_source));
         }
+        // Reported so the UI can show that edges were hidden.
         if wrapped_hidden > 0 {
             out.insert("wrapped_edges_hidden".into(), json!(wrapped_hidden));
         }
@@ -405,6 +381,8 @@ impl Worker {
         }
     }
 
+    /// Runs one topology operation and reports what it changed: element counts
+    /// and the engine's topology counters, as non-zero deltas.
     pub fn topo(&mut self, req: &Value) -> Value {
         let op = match req["op"].as_str() {
             Some(o) => o,
@@ -436,8 +414,7 @@ impl Worker {
         let c1 = self.topo_counts();
         let e1 = self.element_counts();
 
-        // Insertion order matches the TS: element deltas first, then the named
-        // counters in TOPO_NAMES order. Only non-zero deltas are emitted.
+        // Element deltas first, then the named counters in TOPO_NAMES order.
         let mut counts = Map::new();
         for (name, a, b) in [
             ("vertices", e0.0, e1.0), ("edges", e0.1, e1.1),
@@ -504,8 +481,8 @@ impl Worker {
         if self.loaded_file.is_none() {
             return json!({ "ok": false, "error": "No file loaded" });
         }
-        // Dump to an explicit temp path: a bare `dump` writes next to the
-        // datafile, whose directory can be read-only (translocated .app).
+        // An explicit temp path: a bare `dump` writes next to the datafile, whose
+        // directory can be read-only (a translocated .app).
         let path = std::env::temp_dir().join(format!("se-dump-{}.dmp", std::process::id()));
         let p = path.to_string_lossy().into_owned();
 
@@ -515,7 +492,7 @@ impl Worker {
             let _ = std::fs::remove_file(&path);
             return json!({ "ok": false, "se_error": msg });
         }
-        self.command_output(); // discarded, but drains warnings too
+        self.command_output(); // drained so warnings don't reach the next reply
 
         let out = match std::fs::read(&path) {
             Ok(bytes) => json!({ "ok": true, "content": String::from_utf8_lossy(&bytes) }),

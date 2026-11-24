@@ -1,8 +1,6 @@
-//! Shared helpers for the app-layer integration tests (manager.rs, dispatch.rs).
-//! Both need a real built libse and a real built se-worker binary — this repo
-//! has no workspace tying src-tauri to src-tauri/worker (Landmine 3), so
-//! nothing hands us those paths automatically the way `CARGO_BIN_EXE_*` does
-//! within a single crate.
+//! Helpers for the app's integration tests. They need a built libse and
+//! se-worker, whose paths nothing provides automatically: the worker is a
+//! separate crate, so there is no `CARGO_BIN_EXE_*` for it.
 
 #![allow(dead_code)]
 
@@ -24,8 +22,7 @@ fn worker_bin_str() -> Option<String> {
     if let Ok(p) = std::env::var("SE_WORKER_PATH") {
         return Some(p);
     }
-    // Newest build wins: preferring release blindly tested a stale binary
-    // left by `bun run dev` after every worker edit.
+    // Newest build wins: a stale release binary from `bun run dev` would otherwise be tested.
     ["release", "debug"]
         .iter()
         .map(|profile| repo_root().join("src-tauri/worker/target").join(profile).join("se-worker"))
@@ -38,13 +35,9 @@ pub fn worker_bin() -> PathBuf {
     PathBuf::from(worker_bin_str().expect("checked by skip()"))
 }
 
-/// Both a real libse and a built se-worker binary are needed. Skipping (not
-/// failing) when either is missing keeps `cargo test` green on a machine
-/// that hasn't run the C engine / worker build steps — same contract as
-/// worker/tests/smoke.rs.
-///
-/// Under CI (GitHub Actions sets CI=true) a missing prerequisite fails instead:
-/// there, a skip would be a silent pass.
+/// Whether to skip because libse or the worker isn't built, which keeps
+/// `cargo test` usable before the native build. Under CI a missing prerequisite
+/// fails instead, where a skip would be a silent pass.
 pub fn skip() -> bool {
     let ci = std::env::var_os("CI").is_some();
     if std::env::var("SE_LIB_PATH").is_err() {
@@ -60,8 +53,8 @@ pub fn skip() -> bool {
     false
 }
 
-/// A fresh scratch directory under the OS temp dir, namespaced by pid + a
-/// caller-given tag so parallel test binaries never collide.
+/// A fresh scratch directory, named by pid and `tag` so parallel test binaries
+/// never collide.
 pub fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("se-apptest-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

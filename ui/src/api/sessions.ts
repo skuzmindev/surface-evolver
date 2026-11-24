@@ -6,8 +6,7 @@ export interface SessionState {
   energy:       number | null
   area:         number | null
   lagrange_order: number | null
-  // createSession only: what the datafile's `read` section printed, or the
-  // error that abandoned it (se_load runs that section, as SE itself does).
+  /** createSession only: what the datafile's `read` section printed, or its error. */
   output?:      string
 }
 
@@ -15,7 +14,7 @@ export async function createSession(feFile: string): Promise<SessionState> {
   return rpc<SessionState>('createSession', { fe_file: feFile })
 }
 
-// The surface restored from the previous run's auto-saved snapshot, or null.
+/** The previous run's surface, restored from its snapshot, or null. */
 export async function getRestore(): Promise<SessionState | null> {
   return rpc<SessionState | null>('getRestore')
 }
@@ -23,15 +22,15 @@ export async function getRestore(): Promise<SessionState | null> {
 export interface CancelResult {
   cancelled:    boolean
   interrupted?: boolean
-  /** Kill fallback only: the file's last snapshot, reloaded into a new
-   *  session (#22), or null when there was no snapshot of that file. */
+  /** After a kill only: the file's last snapshot in a new session, or null if there was none. */
   restored?:    SessionState | null
 }
 
-/** Stop the running command. The backend sends SIGINT first: `interrupted`
- *  means the engine aborted the command and kept the worker and the evolved
- *  surface. Otherwise it fell back to killing the worker, and then reloads
- *  the file's last snapshot as `restored` (the in-memory surface is gone). */
+/**
+ * Stops the running command. `interrupted` means it aborted and the evolved
+ * surface is kept; otherwise the worker was killed and `restored` is the file's
+ * last snapshot, if any.
+ */
 export async function cancelSession(): Promise<CancelResult> {
   return rpc<CancelResult>('cancel')
 }

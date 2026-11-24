@@ -69,7 +69,7 @@ describe('FilePane', () => {
     expect(useStore.getState().outputLog.some(l => l.includes('File not found: broken.fe'))).toBe(true)
   })
 
-  it('closing the live tab stops its command and removes the tab (#24)', async () => {
+  it('closing the live tab stops its command and removes the tab', async () => {
     useStore.setState({ openFiles: ['cube.fe'], activeFile: 'cube.fe', sessionId: 's1' })
     render(<FilePane />)
     const user = userEvent.setup()

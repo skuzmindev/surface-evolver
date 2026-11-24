@@ -1,6 +1,5 @@
-//! RPC dispatch — port of the Electrobun handlers in src/main/src/index.ts.
-//! The webview calls invoke("rpc", { method, params }); one command keeps the
-//! frontend client a single function, matching the old Electroview.rpc shape.
+//! RPC dispatch. The webview calls `invoke("rpc", { method, params })`: one
+//! Tauri command for every method keeps the frontend client a single function.
 
 use crate::worker::{lock, Manager};
 use serde_json::{json, Value};
@@ -12,35 +11,36 @@ use tauri_plugin_opener::OpenerExt;
 
 const MAX_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 
+/// State shared by every RPC call.
 #[derive(Default)]
 pub struct AppState {
     pub manager: Manager,
-    /// At most one session exists: `Manager` owns a single worker at a time and
-    /// a load kills the previous one. A map here would only ever accumulate ids
-    /// that no worker serves.
+    /// The one live session. `Manager` runs a single worker and a load replaces
+    /// it, so there is never more than one id worth tracking.
     pub session: Mutex<Option<Value>>,
     /// The startup restore, attempted at most once. Lock order: `restore`
     /// before `session`, never the other way round.
     pub restore: Mutex<Restore>,
-    /// Signalled whenever `restore` leaves Running.
+    /// Signalled whenever `restore` leaves `Running`.
     restore_done: Condvar,
-    /// Lazily started on the first snapshot — see `persist`.
+    /// Channel to the snapshot thread, started on first use (see `persist`).
     persist_tx: Mutex<Option<mpsc::Sender<()>>>,
 }
 
+/// Progress of the startup restore.
 #[derive(Default)]
 pub enum Restore {
     #[default]
     NotTried,
-    /// A getRestore is loading the snapshot. The `restore` lock is not held
-    /// meanwhile, so a createSession can supersede it (#32). Another
-    /// getRestore waits on `restore_done` for the result.
+    /// A getRestore is loading the snapshot without holding the `restore` lock,
+    /// so a createSession can supersede it. Other getRestore calls wait on
+    /// `restore_done` for the result.
     Running,
     /// Finished or superseded: the restored session record, or null.
     Done(Value),
 }
 
-// ── path resolution (port of bootstrap-paths.ts + config.ts) ───────────────
+// ── paths ───────────────────────────────────────────────────────────────────
 
 fn state_dir() -> PathBuf {
     std::env::var("SE_STATE_DIR").map(PathBuf::from).unwrap_or_else(|_| {
@@ -72,21 +72,22 @@ fn lib_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
     if let Ok(p) = std::env::var("SE_LIB_PATH") {
         return PathBuf::from(p);
     }
-    // macOS and Linux only.
     let (os, ext) = if cfg!(target_os = "macos") { ("macos", "dylib") } else { ("linux", "so") };
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
     resource_dir(app).join("native").join(format!("libse-{os}-{arch}.{ext}"))
 }
 
+/// The se-worker sidecar, which Tauri places next to the app executable.
 fn worker_bin<R: Runtime>(_app: &AppHandle<R>) -> PathBuf {
     if let Ok(p) = std::env::var("SE_WORKER_PATH") {
         return PathBuf::from(p);
     }
-    // Tauri places externalBin next to the app executable in dev and bundle.
     let exe = std::env::current_exe().unwrap_or_default();
     exe.parent().map(|d| d.join("se-worker")).unwrap_or_default()
 }
 
+/// Reduces a user-supplied name to a safe bare file name: no directory part,
+/// and only `[A-Za-z0-9._-]`.
 fn sanitize(name: &str) -> String {
     let base = Path::new(name)
         .file_name()
@@ -104,8 +105,8 @@ fn resolve_fe_path<R: Runtime>(app: &AppHandle<R>, fe_file: &str) -> PathBuf {
     if user.exists() { user } else { bundled_fe_dir(app).join(&name) }
 }
 
+/// The current UTC time as RFC 3339 to the second, without a date-time crate.
 fn now_iso() -> String {
-    // RFC3339 UTC without a chrono dep: seconds precision is plenty here.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -126,8 +127,9 @@ fn now_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-// ── session helpers ─────────────────────────────────────────────────────────
+// ── sessions ────────────────────────────────────────────────────────────────
 
+/// The session record the UI and the snapshot use, built from a load's stats.
 fn session_from_stats(session_id: &str, fe_file: &str, stats: &Value) -> Value {
     json!({
         "session_id": session_id,
@@ -144,8 +146,8 @@ fn session_from_stats(session_id: &str, fe_file: &str, stats: &Value) -> Value {
     })
 }
 
-/// One worker means one live session id. Anything else is a stale handle the UI
-/// is still holding after a load replaced the worker underneath it.
+/// The session `params.sessionId` names, if it is the live one. Any other id is
+/// a stale handle the UI kept after a load replaced the worker.
 fn get_session(state: &AppState, params: &Value) -> Result<(String, Value), String> {
     let sid = params["sessionId"].as_str().ok_or("sessionId is required")?;
     let session = lock(&state.session).clone().ok_or("No file is loaded")?;
@@ -155,8 +157,8 @@ fn get_session(state: &AppState, params: &Value) -> Result<(String, Value), Stri
     Ok((sid.to_string(), session))
 }
 
-/// No-op if the session was replaced while the command was in flight — those
-/// stats describe a surface that is already gone.
+/// Copies a command's new stats into the session record, unless the session was
+/// replaced while it ran: those stats describe a surface that is gone.
 fn update_session(state: &AppState, sid: &str, result: &Value) {
     let mut guard = lock(&state.session);
     let Some(s) = guard.as_mut().filter(|s| s["session_id"].as_str() == Some(sid)) else {
@@ -170,21 +172,16 @@ fn update_session(state: &AppState, sid: &str, result: &Value) {
     s["last_accessed"] = json!(now_iso());
 }
 
-// ── persistence (best-effort, never surfaces an error) ──────────────────────
+// ── persistence (best-effort: never surfaces an error) ──────────────────────
 
 fn persist_file() -> PathBuf {
     state_dir().join("last-session.json")
 }
 
-/// Request a snapshot. Kept off the command path: the dump is a full worker
-/// round-trip (MBs on a refined mesh), so blocking the RPC response on it would
-/// add visible latency to every command.
-///
-/// One long-lived thread, not one per command. Every snapshot has to take the
-/// manager's io mutex, so a thread per command stacks them up behind a long
-/// `g N` and then lets an older dump land after a newer one. The consumer
-/// drains the channel first and keeps only the newest request — that is the
-/// only snapshot anyone wants anyway.
+/// Asks the snapshot thread to save the live session. It runs off the command
+/// path because a dump is a full worker round-trip. A single thread keeps only
+/// the newest request: a thread per command would queue behind a long `g N`
+/// and could land an older dump after a newer one.
 fn persist<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let mut guard = lock(&state.persist_tx);
     let tx = guard.get_or_insert_with(|| {
@@ -192,7 +189,7 @@ fn persist<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
         let app = app.clone();
         std::thread::spawn(move || {
             while rx.recv().is_ok() {
-                while rx.try_recv().is_ok() {} // coalesce anything queued behind us
+                while rx.try_recv().is_ok() {}
                 snapshot(&app.state());
             }
         });
@@ -201,6 +198,8 @@ fn persist<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     let _ = tx.send(());
 }
 
+/// Saves the live session's dump to `last-session.json`. Writes a temp file and
+/// renames it, so a quit mid-write can't truncate the previous snapshot.
 fn snapshot(state: &AppState) {
     let Some(session) = lock(&state.session).clone() else { return };
     let Some(sid) = session["session_id"].as_str() else { return };
@@ -213,16 +212,16 @@ fn snapshot(state: &AppState) {
         "saved_at": now_iso(),
     });
     let _ = fs::create_dir_all(state_dir());
-    // Write-then-rename: a quit mid-write must not truncate the live snapshot.
     let tmp = persist_file().with_extension("json.tmp");
     if fs::write(&tmp, saved.to_string()).is_ok() {
         let _ = fs::rename(&tmp, persist_file());
     }
 }
 
-/// Load the last persisted snapshot into a fresh worker and return its session
-/// record. Not registered in `state.session`: the caller decides whether it
-/// still should be. `only_file` restricts it to a snapshot of that datafile.
+/// Loads the saved snapshot into a fresh worker and returns its session record,
+/// without registering it: the caller decides whether it still should be.
+/// `only_file` limits it to a snapshot of that datafile. A failed load keeps the
+/// snapshot, since a missing library or sidecar is as likely as a bad dump.
 fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState, only_file: Option<&str>) -> Option<Value> {
     let raw = fs::read_to_string(persist_file()).ok()?;
     let saved: Value = serde_json::from_str(&raw).ok()?;
@@ -240,11 +239,6 @@ fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState, only_file: Op
         &lib_path(app),
     );
     let _ = fs::remove_file(&tmp);
-    // On failure, keep the snapshot. A load failure here is just as likely to
-    // be a missing dylib or an unspawnable sidecar as a bad dump, and deleting
-    // it costs the user real work for an unrelated environment problem.
-    // Genuinely malformed snapshots fall out at the parse above, and the next
-    // successful command overwrites this one anyway.
     loaded.ok().map(|stats| session_from_stats(&sid, fe_file, &stats))
 }
 
@@ -258,9 +252,10 @@ fn is_live(state: &AppState, s: &Value) -> bool {
 
 // ── the command ─────────────────────────────────────────────────────────────
 
+/// The single Tauri command. Runs on a blocking thread: a `g N` can keep the
+/// worker busy for minutes.
 #[tauri::command]
 pub async fn rpc<R: Runtime>(app: AppHandle<R>, method: String, params: Value) -> Result<Value, String> {
-    // Worker I/O blocks (a `g N` can run minutes) — keep it off the event loop.
     tauri::async_runtime::spawn_blocking(move || {
         let result = dispatch(&app, &method, params);
         result.map_err(|e| end_session_if_worker_gone(&app.state(), e))
@@ -269,20 +264,18 @@ pub async fn rpc<R: Runtime>(app: AppHandle<R>, method: String, params: Value) -
     .map_err(|e| e.to_string())?
 }
 
-/// How long Stop keeps interrupting before it kills the worker. An iterating
-/// `g` stops within one SIGINT; the time goes on a mesh fetch the command may
-/// be queued behind, which SIGINT can't stop (measured ~0.9 s per 42k
-/// vertices, linear: 10 s covers ~400k).
+/// How long Stop keeps interrupting before it kills the worker. A `g` stops
+/// within one SIGINT; the wait covers a mesh fetch it may be queued behind,
+/// which SIGINT can't stop (10 s covers about 400k vertices).
 const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Prefix of every error that means "the session is gone" — the frontend
-/// clears its session on it (ui/src/api/client.ts). Keep the two in step.
+/// Prefix of every error that means the session is gone; the frontend clears its
+/// session on it. Must match `SESSION_ENDED` in ui/src/api/client.ts.
 pub const SESSION_ENDED: &str = "Session ended:";
 
-/// Any failure that leaves no worker alive also ends the session: a failed
-/// createSession (the old worker is killed before the load) or a worker that
-/// died mid-request. Leaving `state.session` set made every later command fail
-/// with "No active SE worker" while the UI showed a dead surface (#16).
+/// Ends the session when a failure leaves no worker alive (a failed
+/// createSession, a worker that died mid-request), so later commands don't fail
+/// against a dead surface the UI still shows.
 fn end_session_if_worker_gone(state: &AppState, err: String) -> String {
     if state.manager.has_worker() {
         return err;
@@ -293,50 +286,11 @@ fn end_session_if_worker_gone(state: &AppState, err: String) -> String {
     }
 }
 
+/// Routes one RPC call to its handler.
 fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Result<Value, String> {
     let state: State<AppState> = app.state();
     match method {
-        // Claim the attempt under the lock, then load outside it: holding
-        // `restore` across a worker spawn made every createSession wait (#32).
-        "getRestore" => {
-            {
-                // A second getRestore (React StrictMode runs the mount effect
-                // twice in dev, and ignores the first call's answer) waits for
-                // the running one rather than answer null. createSession never
-                // waits: it only marks the restore superseded.
-                let mut r = state
-                    .restore_done
-                    .wait_while(lock(&state.restore), |r| matches!(r, Restore::Running))
-                    .unwrap_or_else(|e| e.into_inner());
-                match &*r {
-                    // Only while it is still the live session: a later call
-                    // (an error-boundary reload) must not adopt a dead id (#33).
-                    Restore::Done(v) => {
-                        return Ok(if is_live(&state, v) { v.clone() } else { Value::Null });
-                    }
-                    _ => *r = Restore::Running,
-                }
-            }
-            // A file the user already opened wins over a startup restore.
-            let user_loaded = lock(&state.session).is_some();
-            let restored = if user_loaded { None } else { load_snapshot(app, &state, None) };
-            let mut r = lock(&state.restore);
-            let session = match (&*r, restored) {
-                // Still ours: no createSession arrived while the snapshot loaded.
-                (Restore::Running, Some(s)) => {
-                    *lock(&state.session) = Some(s.clone());
-                    s
-                }
-                // Superseded (its load already killed this worker) or nothing
-                // to restore.
-                _ => Value::Null,
-            };
-            if matches!(*r, Restore::Running) {
-                *r = Restore::Done(session.clone());
-            }
-            state.restore_done.notify_all();
-            Ok(session)
-        }
+        "getRestore" => Ok(get_restore(app, &state)),
 
         "listFiles" => {
             let list = |dir: &Path| -> Vec<String> {
@@ -356,61 +310,9 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             Ok(json!(files))
         }
 
-        "createSession" => {
-            let fe_file = params["fe_file"].as_str().ok_or("fe_file is required")?;
-            let fe_path = resolve_fe_path(app, fe_file);
-            if !fe_path.exists() {
-                return Err(format!("File not found: {}", sanitize(fe_file)));
-            }
-            // A user-initiated load supersedes startup restore. Marking it done
-            // stops one from starting; one already Running sees this when its
-            // load returns, and load_session below kills its worker anyway.
-            {
-                let mut r = lock(&state.restore);
-                if !matches!(*r, Restore::Done(_)) {
-                    *r = Restore::Done(Value::Null);
-                    state.restore_done.notify_all();
-                }
-            }
-            let sid = uuid::Uuid::new_v4().to_string();
-            let stats = state
-                .manager
-                .load_session(&sid, &fe_path.to_string_lossy(), &worker_bin(app), &lib_path(app))
-                ?;
-            let session = session_from_stats(&sid, fe_file, &stats);
-            *lock(&state.session) = Some(session.clone());
-            persist(app, &state);
-            // What the datafile's `read` section printed (or the error that
-            // abandoned it): for the UI's log, not the stored session record.
-            let mut reply = session;
-            reply["output"] = stats["output"].clone();
-            Ok(reply)
-        }
+        "createSession" => create_session(app, &state, &params),
 
-        // Stop. SIGINT first (#35): SE aborts the running command and keeps
-        // the worker and its partly evolved surface, so the session survives
-        // and the command's own reply reports the abort. Only if the command
-        // ignores it for CANCEL_GRACE (an engine blocked somewhere SIGINT
-        // can't reach) does Stop fall back to kill(), which loses the
-        // in-memory surface. Then it reloads that file's last snapshot (taken
-        // after the previous command) rather than leave the user to reopen
-        // the file, which would also overwrite that snapshot (#22).
-        // interrupt() and kill() take only `proc`, so they work while `io` is held.
-        "cancel" => {
-            if state.manager.interrupt(CANCEL_GRACE) && state.manager.has_worker() {
-                return Ok(json!({ "cancelled": true, "interrupted": true }));
-            }
-            state.manager.kill();
-            let ended = lock(&state.session).take();
-            let restored = ended
-                .as_ref()
-                .and_then(|s| s["fe_file"].as_str())
-                .and_then(|f| load_snapshot(app, &state, Some(f)));
-            if let Some(s) = &restored {
-                *lock(&state.session) = Some(s.clone());
-            }
-            Ok(json!({ "cancelled": true, "interrupted": false, "restored": restored }))
-        }
+        "cancel" => Ok(cancel(app, &state)),
 
         "uploadFile" => {
             let filename = params["filename"].as_str().ok_or("filename and content are required")?;
@@ -428,8 +330,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             }
             fs::create_dir_all(user_fe_dir()).map_err(|e| e.to_string())?;
             fs::write(user_fe_dir().join(&safe), &buf).map_err(|e| e.to_string())?;
-            // No renderability pre-check: se_load rejects unsupported models
-            // with a real message, which beats a filename allowlist.
+            // No model check here: se_load rejects unsupported models with a clear message.
             Ok(json!({ "filename": safe, "size_bytes": buf.len() }))
         }
 
@@ -450,10 +351,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             Ok(json!({ "filename": sanitize(fe), "content": content }))
         }
 
-        // The datafile's text, resolved like createSession (a user copy wins
-        // over the bundled file). Needs no session: a file that fails to load
-        // must still reach the editor, or a broken Save & Reload can never be
-        // fixed in the app.
+        // Needs no session: a file that fails to load must still reach the editor.
         "readFile" => {
             let fe_file = params["filename"].as_str().ok_or("filename is required")?;
             let path = resolve_fe_path(app, fe_file);
@@ -492,14 +390,13 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
                 i += 1;
             }
             fs::write(&dest, content).map_err(|e| e.to_string())?;
-            let _ = app.opener().reveal_item_in_dir(&dest); // reveal is best-effort
+            let _ = app.opener().reveal_item_in_dir(&dest);
             Ok(json!({ "path": dest.to_string_lossy() }))
         }
 
         "runCommand" => {
             let (sid, _) = get_session(&state, &params)?;
-            // Empty is valid: nothing runs and the reply reports the current
-            // energy/area (the UI's refresh after an interrupted Stop).
+            // Empty is valid: nothing runs, and the reply reports the current energy and area.
             let command = params["command"].as_str().ok_or("command is required")?;
             let result = state.manager
                 .request(&sid, json!({ "cmd": "run", "command": command }))
@@ -529,8 +426,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
         "topo" => {
             let (sid, _) = get_session(&state, &params)?;
             let op = params["op"].as_str().filter(|o| !o.is_empty()).ok_or("op is required")?;
-            // No `n`: only `equi` would use it and the UI sends one pass per
-            // click. `u 5` via runCommand covers the rest. (Formerly backlog item F7.)
+            // One pass per call; `u 5` through runCommand covers repeated passes.
             let req = json!({ "cmd": "topo", "op": op });
             let result = state.manager.request(&sid, req)?;
             update_session(&state, &sid, &result);
@@ -542,7 +438,100 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
     }
 }
 
-// Tiny base64 decoder — avoids a dependency for one call site.
+/// The previous run's session, restored from its snapshot at most once.
+///
+/// Claims the attempt under the `restore` lock, then loads outside it, so a file
+/// opened meanwhile isn't blocked, and that open wins. A caller that finds a
+/// restore running waits for its result instead of getting null (React
+/// StrictMode calls this twice in dev and ignores the first answer). A finished
+/// restore is returned only while it is still the live session.
+fn get_restore<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Value {
+    {
+        let mut r = state
+            .restore_done
+            .wait_while(lock(&state.restore), |r| matches!(r, Restore::Running))
+            .unwrap_or_else(|e| e.into_inner());
+        match &*r {
+            Restore::Done(v) => {
+                return if is_live(state, v) { v.clone() } else { Value::Null };
+            }
+            _ => *r = Restore::Running,
+        }
+    }
+    let user_loaded = lock(&state.session).is_some();
+    let restored = if user_loaded { None } else { load_snapshot(app, state, None) };
+    let mut r = lock(&state.restore);
+    let session = match (&*r, restored) {
+        (Restore::Running, Some(s)) => {
+            *lock(&state.session) = Some(s.clone());
+            s
+        }
+        // Superseded (that load already killed this worker), or nothing to restore.
+        _ => Value::Null,
+    };
+    if matches!(*r, Restore::Running) {
+        *r = Restore::Done(session.clone());
+    }
+    state.restore_done.notify_all();
+    session
+}
+
+/// Loads a datafile into a fresh worker, replacing the old one, and makes it the
+/// live session.
+///
+/// It supersedes the startup restore: marking the restore done stops one from
+/// starting, and one already running sees it when its load returns. The reply
+/// adds `output`, what the datafile's `read` section printed, for the UI's log
+/// only; it isn't stored in the session record.
+fn create_session<R: Runtime>(app: &AppHandle<R>, state: &AppState, params: &Value) -> Result<Value, String> {
+    let fe_file = params["fe_file"].as_str().ok_or("fe_file is required")?;
+    let fe_path = resolve_fe_path(app, fe_file);
+    if !fe_path.exists() {
+        return Err(format!("File not found: {}", sanitize(fe_file)));
+    }
+    {
+        let mut r = lock(&state.restore);
+        if !matches!(*r, Restore::Done(_)) {
+            *r = Restore::Done(Value::Null);
+            state.restore_done.notify_all();
+        }
+    }
+    let sid = uuid::Uuid::new_v4().to_string();
+    let stats = state
+        .manager
+        .load_session(&sid, &fe_path.to_string_lossy(), &worker_bin(app), &lib_path(app))
+        ?;
+    let session = session_from_stats(&sid, fe_file, &stats);
+    *lock(&state.session) = Some(session.clone());
+    persist(app, state);
+    let mut reply = session;
+    reply["output"] = stats["output"].clone();
+    Ok(reply)
+}
+
+/// Stop. Sends SIGINT first: the engine aborts the command but keeps the worker
+/// and its evolved surface. Only if the command ignores it for `CANCEL_GRACE`
+/// does it kill the worker, then reload that file's last snapshot (taken after
+/// the previous command) instead of leaving the user to reopen the file.
+/// `interrupt` and `kill` take only `proc`, so they work while a request holds `io`.
+fn cancel<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Value {
+    if state.manager.interrupt(CANCEL_GRACE) && state.manager.has_worker() {
+        return json!({ "cancelled": true, "interrupted": true });
+    }
+    state.manager.kill();
+    let ended = lock(&state.session).take();
+    let restored = ended
+        .as_ref()
+        .and_then(|s| s["fe_file"].as_str())
+        .and_then(|f| load_snapshot(app, state, Some(f)));
+    if let Some(s) = &restored {
+        *lock(&state.session) = Some(s.clone());
+    }
+    json!({ "cancelled": true, "interrupted": false, "restored": restored })
+}
+
+/// Decodes standard base64, ignoring whitespace: a few lines instead of a
+/// dependency for one caller.
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
     const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut rev = [255u8; 256];
@@ -578,11 +567,8 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-// ── unit tests for the pure/free-standing helpers above ────────────────────
-//
-// No worker, no libse, no fixtures — these run in milliseconds as part of
-// plain `cargo test`. End-to-end coverage against a real worker/AppHandle
-// lives in src-tauri/tests/{manager,dispatch}.rs.
+// Pure helpers only, no worker or libse. End-to-end coverage against a real
+// worker is in src-tauri/tests/{manager,dispatch}.rs.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,8 +656,6 @@ mod tests {
     fn update_session_is_a_noop_if_the_session_was_replaced() {
         let state = AppState::default();
         *lock(&state.session) = Some(json!({ "session_id": "current", "energy": 1.0 }));
-        // A result for a session that's no longer the active one (e.g. a
-        // slow request that lost a race with a reload) must not clobber it.
         update_session(&state, "old", &json!({ "energy": 999.0 }));
         assert_eq!(lock(&state.session).as_ref().unwrap()["energy"], 1.0);
 

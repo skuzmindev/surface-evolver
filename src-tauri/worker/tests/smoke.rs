@@ -1,14 +1,7 @@
-//! End-to-end smoke test: drives the built worker binary over stdin/stdout
-//! exactly as src-tauri/src/worker.rs does, and asserts the response contract.
-//!
-//! Needs a built libse and the bundled fe/ files, so it is skipped unless
-//! SE_LIB_PATH points at one:
+//! Drives the built worker over stdin/stdout, as the app does, and checks the
+//! reply contract. Skipped unless SE_LIB_PATH points at a built libse:
 //!
 //!   SE_LIB_PATH=$PWD/../cmake-build-debug/libse.dylib cargo test
-//!
-//! Skipping-when-unconfigured is deliberate: `cargo test` must stay green on a
-//! machine that has not built the C engine. CI builds libse first, so it runs
-//! there.
 
 mod common;
 use common::{cube, drive, drive_env, repo, skip, load};
@@ -35,12 +28,11 @@ fn every_command_round_trips() {
     assert_eq!(msgs[0]["vertex_count"], 14);
     assert!(msgs[0]["bbox_min"].is_array());
 
-    // run: the cube must have evolved toward the sphere
+    // run: the cube evolved toward a sphere
     let e = msgs[1]["energy"].as_f64().unwrap();
     assert!(e > 4.8 && e < 6.0, "energy after evolve looks wrong: {e}");
 
-    // mesh: geometry present, colours present because requested, and every
-    // facet index must be in range — this is the buffer-bounds contract.
+    // mesh: colours present because requested, and every facet index in range.
     let mesh = &msgs[2];
     let verts = mesh["vertices"].as_array().unwrap();
     let facets = mesh["facets"].as_array().unwrap();
@@ -71,18 +63,16 @@ fn mesh_omits_colours_unless_requested() {
     if skip() { return }
     let msgs = drive(&[cube(), r#"{"cmd":"mesh"}"#.into()]);
     let mesh = &msgs[1];
-    // Absent entirely, not null — the frontend distinguishes these.
+    // Absent, not null: the frontend tells them apart.
     assert!(mesh.get("facet_colors").is_none(), "facet_colors must be absent");
     assert!(mesh.get("edge_colors").is_none(), "edge_colors must be absent");
 }
 
+/// se_load accepts SOAPFILM only: STRING facets are arbitrary polygons the mesh
+/// API can't express.
 #[test]
 fn string_model_is_rejected_at_load() {
     if skip() { return }
-    // se_load accepts SOAPFILM only: STRING facets are arbitrary polygons, so
-    // se_get_facets() reports none and the surface would draw as a bare edge
-    // web. The bundled STRING datafiles were removed alongside that gate, so
-    // this writes its own — the point is the contract, not any one file.
     let dir = std::env::temp_dir().join(format!("se-smoke-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("string_tri.fe");
@@ -119,10 +109,10 @@ fn bad_input_is_reported_not_fatal() {
     assert_eq!(msgs.len(), 7, "worker must answer every line and stay up");
     assert_eq!(msgs[0]["error"], "invalid JSON");
     assert!(msgs[1]["error"].as_str().unwrap().starts_with("unknown cmd:"));
-    // bad *parameter* to a known command — distinct from the unknown-cmd case
+    // A bad parameter to a known command, not an unknown command.
     assert_eq!(msgs[3]["ok"], false);
     assert!(msgs[3]["error"].as_str().unwrap().starts_with("unknown topology op:"));
-    // interactive commands report via se_error, which the manager surfaces
+    // Interactive commands report through se_error, which the app shows.
     assert!(msgs[4]["se_error"].as_str().unwrap().contains("interactive"));
     assert_eq!(msgs[5]["ok"], false);
     assert_eq!(msgs[6]["ok"], true, "worker survived the bad input above");
@@ -135,13 +125,12 @@ fn blank_lines_get_no_reply() {
     assert_eq!(msgs.len(), 1, "blank lines must not produce a response");
 }
 
+/// On a periodic surface (phelanc.fe) an edge crossing a period boundary would
+/// span the domain, so the mesh omits it and reports how many, without
+/// mutating the surface.
 #[test]
 fn periodic_wrap_edges_are_hidden() {
     if skip() { return }
-    // phelanc.fe is TORUS_FILLED. An edge crossing a period boundary has no
-    // honest straight-line form — drawn as-is it spans the domain, which is
-    // what audit item F1 measured (103 of 368 edges). The mesh must omit those
-    // and report how many, without mutating the surface (no `detorus`).
     let path = repo().join("fe/phelanc.fe");
     let msgs = drive(&[
         load(&path),
@@ -160,8 +149,7 @@ fn periodic_wrap_edges_are_hidden() {
         "edge_colors must stay index-aligned with the filtered edges"
     );
 
-    // The actual defect: wrap-around edges render as lines across the whole
-    // domain. What remains must be uniform — no edge many times the median.
+    // No edge left that is many times the median length.
     let verts: Vec<Vec<f64>> = mesh["vertices"].as_array().unwrap().iter()
         .map(|v| v.as_array().unwrap().iter().map(|c| c.as_f64().unwrap()).collect())
         .collect();
@@ -174,11 +162,11 @@ fn periodic_wrap_edges_are_hidden() {
     assert!(max < median * 5.0, "edge spanning the domain still drawn: max {max} vs median {median}");
 }
 
+/// On a plain surface the wrap check hides nothing, and must not touch
+/// E_WRAP_ATTR, which has no storage without a symmetry group.
 #[test]
 fn non_periodic_mesh_hides_nothing() {
     if skip() { return }
-    // The same code path must be a no-op on a plain surface — and must not
-    // touch E_WRAP_ATTR, which has no storage without a symmetry group.
     let msgs = drive(&[cube(), r#"{"cmd":"mesh","colors":true}"#.into()]);
     let mesh = &msgs[1];
     assert!(mesh.get("wrapped_edges_hidden").is_none(), "key must be absent, not 0");
@@ -189,11 +177,11 @@ fn non_periodic_mesh_hides_nothing() {
     );
 }
 
+/// `U` with a fixed scale succeeds with WARNING 1639, which belongs in its own
+/// reply, not in the next failure's.
 #[test]
 fn warnings_reply_with_their_command_not_the_next_failure() {
     if skip() { return }
-    // #30: `U` with a fixed scale succeeds with WARNING 1639. It belongs in
-    // that command's reply, not glued onto whichever command fails next.
     let msgs = drive(&[
         cube(),
         r#"{"cmd":"run","command":"m 0.1"}"#.into(),
@@ -206,10 +194,10 @@ fn warnings_reply_with_their_command_not_the_next_failure() {
     assert!(err.contains("Divide by zero") && !err.contains("WARNING"), "got: {err}");
 }
 
+/// A refined mesh lists far more than the 256 KB capture buffer holds.
 #[test]
 fn oversized_output_says_it_was_truncated() {
     if skip() { return }
-    // #31: a refined mesh lists far more than the 256 KB capture buffer.
     let msgs = drive(&[
         cube(),
         r#"{"cmd":"run","command":"r; r; r; r; r; list vertices"}"#.into(),
@@ -219,12 +207,11 @@ fn oversized_output_says_it_was_truncated() {
     assert!(out.ends_with("[output truncated at 256 KB]\n"), "tail: {:?}", &out[out.len() - 120..]);
 }
 
+/// With itdebug on, SE printf()s straight to fd 1. Every stdout line must still
+/// be a JSON reply (`drive` panics otherwise), and the session must survive.
 #[test]
 fn engine_printf_does_not_corrupt_the_json_pipe() {
     if skip() { return }
-    // #18: with itdebug on, SE printf()s straight to fd 1. Every stdout line
-    // must still be a JSON reply (drive() panics on any that is not), and
-    // the session must survive.
     let msgs = drive(&[
         cube(),
         r#"{"cmd":"run","command":"itdebug on"}"#.into(),
@@ -235,13 +222,11 @@ fn engine_printf_does_not_corrupt_the_json_pipe() {
     assert!(msgs.iter().all(|m| m["ok"] == true), "{msgs:?}");
 }
 
+/// A facet crossing the cell boundary comes back unwrapped: every facet side is
+/// about as long as an ordinary edge, and no facet is dropped.
 #[test]
 fn periodic_facets_are_drawn_unwrapped() {
     if skip() { return }
-    // #17: a facet crossing the cell boundary used to be sent with its
-    // vertices on opposite sides of the cell (109 of 276 in phelanc.fe), so
-    // it was drawn across the whole domain. Unwrapped, every facet side is
-    // about as long as an ordinary edge, and no facet is dropped.
     let path = repo().join("fe/phelanc.fe");
     let msgs = drive(&[
         load(&path),
@@ -255,7 +240,7 @@ fn periodic_facets_are_drawn_unwrapped() {
     assert_eq!(facets.len() as u64, msgs[0]["facet_count"].as_u64().unwrap(), "no facet may be dropped");
     assert_eq!(mesh["facet_colors"].as_array().unwrap().len(), facets.len());
 
-    // Every appended duplicate maps back to a real engine vertex, so picking it works.
+    // Every appended duplicate maps back to a real engine vertex, for picking.
     let engine_n = msgs[0]["vertex_count"].as_u64().unwrap() as usize;
     let src = mesh["unwrap_source"].as_array().expect("periodic mesh must report unwrap_source");
     assert_eq!(verts.len(), engine_n + src.len());
@@ -275,11 +260,10 @@ fn periodic_facets_are_drawn_unwrapped() {
     }
 }
 
+/// The dump path goes into an SE string literal, where `\x` is an escape.
 #[test]
 fn dump_works_when_the_temp_path_has_backslashes() {
     if skip() { return }
-    // #26: the dump path goes into an SE string literal, where `\x` is an
-    // escape, so a temp directory whose name holds a backslash broke dumps.
     let tmp = std::env::temp_dir().join(format!("se-bs\\dir-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let msgs = drive_env(&[cube(), r#"{"cmd":"dump"}"#.into()], &[("TMPDIR", &tmp), ("TEMP", &tmp), ("TMP", &tmp)]);
@@ -288,14 +272,13 @@ fn dump_works_when_the_temp_path_has_backslashes() {
     assert!(msgs[1]["content"].as_str().unwrap().contains("vertices"));
 }
 
+/// `j; g` slips past the guard on bare `j` and reaches a prompt, which must get
+/// EOF instead of blocking on the IPC pipe and swallowing the next request.
+/// Requests go one at a time, as the app sends them; sent all at once, the
+/// reader would buffer them.
 #[test]
 fn an_engine_prompt_cannot_read_the_ipc_pipe() {
     if skip() { return }
-    // #41: `j` (jiggle) prompts for a temperature on stdin. The worker's
-    // guard only catches a bare `j`, so `j; g` reached the prompt, which
-    // blocked on the IPC pipe waiting for an answer, then swallowed the next
-    // request as one. Requests go one at a time here, as the app sends
-    // them: writing them all up front would let the reader buffer the lot.
     use std::io::{BufRead, BufReader, Write};
     let mut child = std::process::Command::new(common::worker_bin())
         .env("SE_LIB_PATH", std::env::var("SE_LIB_PATH").unwrap())
@@ -315,9 +298,8 @@ fn an_engine_prompt_cannot_read_the_ipc_pipe() {
         rx.recv_timeout(std::time::Duration::from_secs(5)).ok().map(|l| serde_json::from_str(&l).unwrap())
     };
 
-    // A prompt first reads leftover lines of the loaded datafile (SE keeps it
-    // as its command file), and only falls back to stdin once those run out,
-    // so the hang shows after a few prompts, not the first.
+    // A prompt reads the datafile's leftover lines before stdin, so a hang would
+    // show after a few prompts, not the first.
     assert!(ask(&cube()).is_some());
     let mut replies = 0;
     for _ in 0..40 {
@@ -330,12 +312,11 @@ fn an_engine_prompt_cannot_read_the_ipc_pipe() {
     assert!(next.unwrap()["output"].as_str().unwrap_or_default().contains("4242"));
 }
 
+/// se_load runs the datafile's `read` section, as standalone SE does, and what it
+/// prints (or a failure in it) comes back with the load.
 #[test]
 fn load_runs_the_read_section_and_reports_its_output() {
     if skip() { return }
-    // se_load now runs the datafile's `read` section, as standalone SE does.
-    // Whatever it prints (or a failure in it) comes back with the load, not
-    // glued onto the next command's reply.
     let dir = std::env::temp_dir().join(format!("se-readsec-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("readsec.fe");
@@ -353,11 +334,10 @@ fn load_runs_the_read_section_and_reports_its_output() {
     assert!(!msgs[1]["output"].as_str().unwrap().contains("9119"), "load output leaked into the next reply");
 }
 
+/// A prompt after loading phelanc.fe must not crash the worker.
 #[test]
 fn a_prompt_on_phelanc_no_longer_crashes_the_worker() {
     if skip() { return }
-    // Before the read section ran at load, its leftover lines fed prompt(),
-    // and on phelanc.fe the first `j; g` killed the worker.
     let msgs = drive(&[
         load(&repo().join("fe/phelanc.fe")),
         r#"{"cmd":"run","command":"j; g"}"#.into(),
@@ -367,13 +347,12 @@ fn a_prompt_on_phelanc_no_longer_crashes_the_worker() {
     assert!(msgs[2]["output"].as_str().unwrap_or_default().contains("4242"));
 }
 
+/// Replies say whether what the viewer draws (positions, facets, edges,
+/// colours) differs from the mesh last sent. Colours count: `set facet color`
+/// leaves the energy alone but changes the picture.
 #[test]
 fn replies_say_whether_the_drawn_geometry_changed() {
     if skip() { return }
-    // #21: every command used to refetch the whole mesh (~5 MB refined) and
-    // reset the camera. A reply now says whether what the viewer draws
-    // (positions, facets, edges, colours) differs from the mesh last sent.
-    // Colours count: `set facet color` leaves energy alone but changes the picture.
     let msgs = drive(&[
         cube(),
         r#"{"cmd":"mesh","colors":true}"#.into(),

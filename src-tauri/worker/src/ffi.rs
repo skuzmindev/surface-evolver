@@ -1,47 +1,36 @@
-//! Raw FFI binding to libse, loaded at runtime with `libloading`.
+//! Raw binding to libse, loaded at runtime with `libloading`.
 //!
-//! The library is leaked deliberately: this process owns exactly one libse
-//! instance for its whole life (the engine cannot be reset or run twice — see AGENTS.md landmine 1), so
-//! there is nothing to unload and leaking lets the resolved function pointers
-//! be plain `fn` values instead of lifetime-bound `Symbol`s.
+//! The library is leaked on purpose: the process keeps one libse for its whole
+//! life (the engine can't be reset), and leaking makes the resolved symbols
+//! plain `fn` pointers instead of lifetime-bound `Symbol`s.
 //!
-//! Every signature here must match engine/bindings/c/se_api.h exactly. A
-//! mismatch is undefined behaviour, not a compile error.
+//! Every signature must match engine/bindings/c/se_api.h exactly: a mismatch is
+//! undefined behaviour, not a compile error (`tests/ffi_signatures.rs` checks).
 
 use libloading::{Library, Symbol};
 
-/// The resolved libse symbol table: one field per export of `se_api.h`, in the
-/// header's own order.
+/// The resolved libse symbols, one per export of `se_api.h`, in its order.
 ///
-/// Field docs give only the buffer each call writes into, because that is what
-/// a Rust caller has to get right and what the compiler cannot check here. The
-/// full contract — argument meaning, and which of `-1` / `0` / `>0` a call
-/// returns when — lives in `se_api.h` and is deliberately not restated, since a
-/// second copy is exactly the drift `tests/ffi_signatures.rs` exists to catch.
-///
-/// Every `max_count` argument is a capacity, and every return value is the
-/// number of rows actually written, which may be smaller. Iterate over the
-/// return value clamped to the allocation, never over the return value alone:
-/// this crate builds with `panic = "abort"`, so an out-of-bounds index kills
-/// the process rather than surfacing as an error.
+/// Field docs give only the buffer each call writes into, the part the compiler
+/// can't check; the full contract is in `se_api.h`. `max_count` is a capacity and
+/// the return value the rows actually written: iterate over the return value
+/// clamped to the allocation, because with `panic = "abort"` an out-of-bounds
+/// index kills the process.
 pub struct Se {
-    /// Initialise the runtime. Must succeed before any other call; not
-    /// repeatable within a process.
+    /// Must succeed before any other call; not repeatable within a process.
     pub init: unsafe extern "C" fn() -> i32,
-    /// Load a `.fe` datafile from a NUL-terminated path. On failure the engine
+    /// Loads a `.fe` file from a NUL-terminated path. After a failure the engine
     /// state is unusable and the process should be discarded.
     pub load: unsafe extern "C" fn(*const u8) -> i32,
-    /// Run one NUL-terminated SE command. Blocks; SIGINT aborts an iteration.
+    /// Runs one NUL-terminated SE command. Blocks; SIGINT aborts an iteration.
     pub run: unsafe extern "C" fn(*const u8) -> i32,
 
-    /// Total energy of the surface.
     pub get_energy: unsafe extern "C" fn() -> f64,
-    /// Total area of the surface.
     pub get_area: unsafe extern "C" fn() -> f64,
-    /// Current step-size scale factor.
+    /// The current step-size scale factor.
     pub get_scale: unsafe extern "C" fn() -> f64,
 
-    /// Ambient spatial dimension. Not the coordinate stride — that is always 3.
+    /// The ambient dimension. Not the coordinate stride, which is always 3.
     pub get_sdim: unsafe extern "C" fn() -> i32,
     /// Vertex count; the row capacity for the vertex, id and info accessors.
     pub get_vertex_count: unsafe extern "C" fn() -> i32,
@@ -51,8 +40,7 @@ pub struct Se {
     pub get_facet_count: unsafe extern "C" fn() -> i32,
     /// Body count; the row capacity for body volumes and pressures.
     pub get_body_count: unsafe extern "C" fn() -> i32,
-    /// Element polynomial order. Greater than 1 means the linear render is
-    /// geometrically wrong and the UI should warn.
+    /// Element order. Above 1 the straight-edged render is wrong and the UI warns.
     pub get_lagrange_order: unsafe extern "C" fn() -> i32,
 
     /// Vertex coordinates into `[f64; max_count * 3]`. The stride is always 3
@@ -74,9 +62,11 @@ pub struct Se {
     /// Per-edge periodic wrap codes into `[i32; max_count]`, in `get_edges` row
     /// order. Returns 0 for a non-periodic surface, which is not an error.
     pub get_edge_wraps: unsafe extern "C" fn(*mut i32, i32) -> i32,
+    /// Facet corners unwrapped across period boundaries into `[f64; max_count * 9]`,
+    /// in `get_facets` row order. Returns 0 for a non-periodic surface.
     pub get_facet_coords: unsafe extern "C" fn(*mut f64, i32) -> i32,
-    /// Axis-aligned bounds into two `[f64; sdim]` — sized by `get_sdim`, unlike
-    /// the vertex accessors.
+    /// Axis-aligned bounds into two `[f64; sdim]`: sized by `get_sdim`, unlike the
+    /// vertex accessors.
     pub get_bounding_box: unsafe extern "C" fn(*mut f64, *mut f64) -> i32,
 
     /// Cumulative topology counters into `[i32; max_count]`, in the fixed order
@@ -95,22 +85,22 @@ pub struct Se {
     /// may exceed what fit in the buffer.
     pub get_vertex_info:
         unsafe extern "C" fn(i32, *mut i32, *mut f64, *mut i32, *mut i32, i32) -> i32,
-    /// Constraint name into `[u8; size]`, always NUL-terminated, truncated to
-    /// fit. Returns 0 on success — it writes no rows.
+    /// Constraint name into `[u8; size]`, NUL-terminated and truncated to fit.
+    /// Returns 0 on success: it writes no rows.
     pub get_constraint_name: unsafe extern "C" fn(i32, *mut u8, i32) -> i32,
 
-    /// Drain captured stdout into `[u8; bufsize]`. Destructive: whatever does
-    /// not fit is discarded rather than held for the next call.
+    /// Drains captured stdout into `[u8; bufsize]`. Whatever doesn't fit is
+    /// discarded, not kept for the next call.
     pub pop_output: unsafe extern "C" fn(*mut u8, i32) -> i32,
-    /// Drain captured stderr into `[u8; bufsize]`, same contract.
+    /// Drains captured stderr, same contract.
     pub pop_errout: unsafe extern "C" fn(*mut u8, i32) -> i32,
-    /// Borrowed pointer to the last API-level error message. Never null, owned
-    /// by the library, invalidated by the next failing call — copy before then.
+    /// The last API-level error message: never null, owned by the library, and
+    /// invalidated by the next failing call, so copy it first.
     pub last_error: unsafe extern "C" fn() -> *const std::os::raw::c_char,
 }
 
-/// Resolve one symbol, dereferencing to a plain fn pointer. Safe to detach from
-/// the `Library` lifetime only because the library is leaked (never unloaded).
+/// Resolves one symbol to a plain fn pointer, which may outlive the `Symbol`
+/// only because the library is leaked.
 unsafe fn sym<T: Copy>(lib: &'static Library, name: &[u8]) -> Result<T, String> {
     let s: Symbol<T> = lib
         .get(name)
@@ -119,8 +109,7 @@ unsafe fn sym<T: Copy>(lib: &'static Library, name: &[u8]) -> Result<T, String> 
 }
 
 impl Se {
-    /// dlopen + resolve every symbol. Unlike bun:ffi, which throws on the first
-    /// missing symbol for the whole table, this reports exactly which one.
+    /// Opens libse and resolves every symbol, naming the one that is missing.
     pub fn load_library(path: &str) -> Result<Self, String> {
         unsafe {
             let lib = Library::new(path).map_err(|e| format!("{e}"))?;
