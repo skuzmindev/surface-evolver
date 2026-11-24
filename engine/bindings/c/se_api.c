@@ -27,12 +27,12 @@
 /* ── output capture ───────────────────────────────────────────────────── */
 /*
  * open_memstream gives us an in-memory FILE* whose buffer/size we can read
- * directly. (macOS and Linux only: Windows support was dropped.)
+ * directly.
  *
  * The engine's kb_error bailout (userio.c, `bailout:`) fclose()s outfd and
  * erroutfd, which are these streams, and points them back at stdout/stderr
  * before it longjmps. From then on cap_out_fd/cap_err_fd dangle: nothing may
- * fflush or fclose them (#19). A stream is "closed by the bailout" when SE's
+ * fflush or fclose them. A stream is "closed by the bailout" when SE's
  * pointer no longer matches ours; cap_recover_after_bailout() salvages what
  * it held and reopens it. fclose() leaves open_memstream's buffer and size
  * holding the final contents, so the salvage needs no FILE* at all.
@@ -134,12 +134,12 @@ static void set_errmsg_from(int n, const char *fallback, const char *arg)
         snprintf(se_errmsg_buf, sizeof(se_errmsg_buf), fallback, arg ? arg : "(null)");
 }
 
-/* ── SIGINT (Stop, #35) ───────────────────────────────────────────────── */
+/* ── SIGINT (Stop) ────────────────────────────────────────────────────── */
 /*
  * SE's own catcher (utility.c) longjmps out of the signal handler, via
  * kb_error(RECOVERABLE_QUIET), whenever the engine is not iterating: into
  * jumpbuf[0], whose se_run frame has usually returned. That is undefined
- * behaviour, and it hung the worker when Stop's SIGINT landed during a mesh
+ * behaviour, and hangs the worker when Stop's SIGINT lands during a mesh
  * fetch. This handler keeps only catcher's safe half: during an iteration
  * (or a Hessian iteration) ask it to break, which makes SE abort the command
  * with ERROR 2073 and keep the surface; at any other moment, do nothing.
@@ -273,7 +273,7 @@ int se_load(const char *filename)
     subshell_depth = 0;
     if (setjmp(jumpbuf[0]) != 0) {
         /* The bailout closed both capture streams: salvage the engine's own
-         * error text and reopen them, or later output leaks to stdout (#19). */
+         * error text and reopen them, or later output leaks to stdout. */
         int n = (int)cap_recover_after_bailout(se_errmsg_buf, sizeof(se_errmsg_buf) - 1);
         set_errmsg_from(n, "Error loading '%s'", filename);
         return -1;
@@ -365,16 +365,16 @@ int se_run(const char *cmd)
     if (setjmp(jumpbuf[0]) != 0) {
         /* A RECOVERABLE error escaped command()'s cmdbuf handler. The bailout
          * closed both capture streams; salvage the error text from what they
-         * held, then reopen them (#19). */
+         * held, then reopen them. */
         int n = (int)cap_recover_after_bailout(se_errmsg_buf, sizeof(se_errmsg_buf) - 1);
         set_errmsg_from(n, "SE error during command: %s", cmd);
         return -1;
     }
 
     /* SE's `load` command longjmps to loadjumpbuf, which only the standalone
-     * main() sets: in libse it is zeroed, so `load` used to crash the process
-     * (#20). Catch it and turn it into an ordinary RECOVERABLE error, whose
-     * bailout does the cleanup and lands in the jumpbuf[0] handler above.
+     * main() sets: in libse it is zeroed, and the jump would crash the process.
+     * Catch it and turn it into an ordinary RECOVERABLE error, whose bailout
+     * does the cleanup and lands in the jumpbuf[0] handler above.
      * Refused rather than performed: the host owns which file a session has. */
     if (setjmp(loadjumpbuf) != 0)
         kb_error(9001, "The load command is not available here: "
@@ -588,9 +588,8 @@ int se_get_facet_colors(int *front, int *back, int max_count)
     int n = 0;
     if (!se_initialized || max_count <= 0)
         return -1;
-    /* Convention: 0 = "not applicable to this representation", -1 = bad args.
-     * Kept separate from the argument check above, which used to be conflated
-     * with it and reported a wrong model as a caller error. */
+    /* 0 = "not applicable to this representation", kept apart from the -1
+     * argument check above: a wrong model is not a caller error. */
     if (web.representation != SOAPFILM)
         return 0;
     FOR_ALL_FACETS(f_id) {
@@ -609,9 +608,7 @@ int se_get_facet_colors(int *front, int *back, int max_count)
 
 /* ── se_get_edge_colors ───────────────────────────────────────────────── */
 /* Iterates edges in se_get_edges() row order, using the identical FOR_ALL_EDGES
- * walk and valid-endpoint filter so row i is the same edge in both. The edge
- * length and density accessors that used to share this banner were removed in
- * 0.2.1 — `print edge[n].length` covers them through the command language. */
+ * walk and valid-endpoint filter so row i is the same edge in both. */
 int se_get_edge_colors(int *out, int max_count)
 {
     edge_id e_id;
@@ -663,7 +660,7 @@ int se_get_edge_wraps(int *out, int max_count)
 /*
  * Facet corner coordinates with each facet unwrapped across period
  * boundaries, so a facet that crosses the cell is returned whole, next to its
- * first vertex, instead of with corners on opposite sides of the domain (#17).
+ * first vertex, instead of with corners on opposite sides of the domain.
  * Same walk as SE's own "connected" display (graphgen.c): start at the first
  * corner with the identity wrap and compose each edge's wrap going round.
  *

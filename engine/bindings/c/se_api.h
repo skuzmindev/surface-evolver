@@ -18,9 +18,7 @@ extern "C" {
  *   0  "not applicable to this surface" — e.g. an accessor gated on the
  *      SOAPFILM representation or on a periodic surface. Not an error; the
  *      caller should treat it as an empty result.
- *  >0  number of elements written.
- * Some accessors used to report a wrong representation as -1 and others as 0;
- * they now all use 0. */
+ *  >0  number of elements written. */
 
 /* ── lifecycle ────────────────────────────────────────────────────────── */
 
