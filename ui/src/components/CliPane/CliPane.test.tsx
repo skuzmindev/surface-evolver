@@ -73,6 +73,27 @@ describe('CliPane', () => {
     resolveRun({ output: '', energy: null, area: null }) // let the pending call settle
   })
 
+  it('when the kill fallback restores a snapshot, Stop adopts the new session (#22)', async () => {
+    useStore.setState({ sessionId: 's1', activeFile: 'cube.fe' })
+    let resolveRun!: (v: RunCommandResponse) => void
+    vi.mocked(runCommand).mockReturnValue(new Promise(r => { resolveRun = r }))
+    vi.mocked(cancelSession).mockResolvedValue({
+      cancelled: true, interrupted: false,
+      restored: { session_id: 's2', fe_file: 'cube.fe', energy: 4.2, area: 5.5, lagrange_order: 1 },
+    })
+
+    render(<CliPane />)
+    const user = userEvent.setup()
+    await user.type(screen.getByPlaceholderText('SE command…'), 'g 1000{Enter}')
+    await user.click(await screen.findByRole('button', { name: 'Stop' }))
+
+    expect(useStore.getState().sessionId).toBe('s2')
+    expect(useStore.getState().energy).toBe(4.2)
+    expect(screen.getByText(/restored the surface/)).toBeInTheDocument()
+
+    resolveRun({ output: '', energy: null, area: null })
+  })
+
   it('a native Run menu action (run:refine) triggers the matching topo op', async () => {
     useStore.setState({ sessionId: 's1' })
     vi.mocked(runTopo).mockResolvedValue({

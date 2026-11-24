@@ -143,3 +143,6 @@ change, see `git log`.
   replaces only that pane, with a "Try again" that brings it back without
   losing the session. The whole-window Reload stays as the last resort and
   no longer revives a session that had already been replaced.
+- When Stop has to end an unresponsive engine, the file's last auto-saved
+  surface is reloaded straight away, instead of leaving you to reopen the
+  file (which also overwrote that snapshot).

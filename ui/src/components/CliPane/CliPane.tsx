@@ -20,15 +20,15 @@ function summarize(counts: Record<string, number>): string {
 }
 
 export default function CliPane() {
-  const { sessionId, outputLog, appendLog, setStats, bumpMeshVersion, clearSession } = useStore()
+  const { sessionId, outputLog, appendLog, setStats, bumpMeshVersion, clearSession, setSession } = useStore()
   const [input, setInput] = useState('')
   const [busy, setBusy]   = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Stop. The backend interrupts the command (SIGINT) and keeps the surface;
   // only if that fails does it kill the worker, and then the in-memory surface
-  // is gone (the tab stays so the file can be reopened, and the last
-  // auto-snapshot is still on disk).
+  // is gone: the backend reloads the file's last auto-snapshot if there is one,
+  // otherwise the tab stays so the file can be reopened.
   // Set by Stop: the stopped command's own failure (the killed worker's
   // in-flight request) is expected, not a crash worth reporting.
   const stoppedRef = useRef(false)
@@ -53,6 +53,16 @@ export default function CliPane() {
         const now = await runCommand(sessionId, '')
         setStats(now.energy, now.area)
         if (now.geometry_changed !== false) bumpMeshVersion()
+        return
+      }
+      // The command ignored SIGINT, so the backend killed the worker and
+      // reloaded this file's last snapshot into a new session (#22).
+      const r = res?.restored
+      if (r) {
+        setSession(r.session_id, r.fe_file)
+        setStats(r.energy, r.area)
+        bumpMeshVersion()
+        appendLog('[stopped] engine killed — restored the surface from before this command')
         return
       }
       clearSession()

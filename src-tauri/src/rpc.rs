@@ -219,11 +219,14 @@ fn snapshot(state: &AppState) {
 
 /// Load the last persisted snapshot into a fresh worker and return its session
 /// record. Not registered in `state.session`: the caller decides whether it
-/// still should be.
-fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Option<Value> {
+/// still should be. `only_file` restricts it to a snapshot of that datafile.
+fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState, only_file: Option<&str>) -> Option<Value> {
     let raw = fs::read_to_string(persist_file()).ok()?;
     let saved: Value = serde_json::from_str(&raw).ok()?;
     let (dmp, fe_file) = (saved["dmp"].as_str()?, saved["fe_file"].as_str()?);
+    if only_file.is_some_and(|f| f != fe_file) {
+        return None;
+    }
     let tmp = std::env::temp_dir().join(format!("se-restore-{}.dmp", uuid::Uuid::new_v4()));
     fs::write(&tmp, dmp).ok()?;
     let sid = uuid::Uuid::new_v4().to_string();
@@ -307,7 +310,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             }
             // A file the user already opened wins over a startup restore.
             let user_loaded = lock(&state.session).is_some();
-            let restored = if user_loaded { None } else { load_snapshot(app, &state) };
+            let restored = if user_loaded { None } else { load_snapshot(app, &state, None) };
             let mut r = lock(&state.restore);
             let session = match (&*r, restored) {
                 // Still ours: no createSession arrived while the snapshot loaded.
@@ -377,16 +380,25 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
         // the worker and its partly evolved surface, so the session survives
         // and the command's own reply reports the abort. Only if the command
         // ignores it for CANCEL_GRACE (an engine blocked somewhere SIGINT
-        // can't reach) does Stop fall back to kill(): that loses the
-        // in-memory surface, but the last snapshot survives for getRestore.
-        // Both take only the `proc` mutex, so they work while `io` is held.
+        // can't reach) does Stop fall back to kill(), which loses the
+        // in-memory surface. Then it reloads that file's last snapshot (taken
+        // after the previous command) rather than leave the user to reopen
+        // the file, which would also overwrite that snapshot (#22).
+        // interrupt() and kill() take only `proc`, so they work while `io` is held.
         "cancel" => {
             if state.manager.interrupt(CANCEL_GRACE) && state.manager.has_worker() {
                 return Ok(json!({ "cancelled": true, "interrupted": true }));
             }
             state.manager.kill();
-            *lock(&state.session) = None;
-            Ok(json!({ "cancelled": true, "interrupted": false }))
+            let ended = lock(&state.session).take();
+            let restored = ended
+                .as_ref()
+                .and_then(|s| s["fe_file"].as_str())
+                .and_then(|f| load_snapshot(app, &state, Some(f)));
+            if let Some(s) = &restored {
+                *lock(&state.session) = Some(s.clone());
+            }
+            Ok(json!({ "cancelled": true, "interrupted": false, "restored": restored }))
         }
 
         "uploadFile" => {

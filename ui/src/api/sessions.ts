@@ -20,12 +20,20 @@ export async function getRestore(): Promise<SessionState | null> {
   return rpc<SessionState | null>('getRestore')
 }
 
+export interface CancelResult {
+  cancelled:    boolean
+  interrupted?: boolean
+  /** Kill fallback only: the file's last snapshot, reloaded into a new
+   *  session (#22), or null when there was no snapshot of that file. */
+  restored?:    SessionState | null
+}
+
 /** Stop the running command. The backend sends SIGINT first: `interrupted`
  *  means the engine aborted the command and kept the worker and the evolved
- *  surface. Otherwise it fell back to killing the worker (the surface is gone,
- *  the last snapshot survives). */
-export async function cancelSession(): Promise<{ cancelled: boolean; interrupted?: boolean }> {
-  return rpc<{ cancelled: boolean; interrupted?: boolean }>('cancel')
+ *  surface. Otherwise it fell back to killing the worker, and then reloads
+ *  the file's last snapshot as `restored` (the in-memory surface is gone). */
+export async function cancelSession(): Promise<CancelResult> {
+  return rpc<CancelResult>('cancel')
 }
 
 /** The read section's output for the log, or null when it printed nothing. */
