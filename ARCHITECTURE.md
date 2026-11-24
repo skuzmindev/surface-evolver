@@ -22,13 +22,13 @@ live WebGL viewer, and a command-line pane. Measured, not estimated:
 
 | | Lines | Files |
 |---|---|---|
-| App code (Rust + TypeScript + build scripts, excluding tests) | 3,369 | — |
-| App test code (Rust tests incl. `rpc.rs`'s test module, Vitest) | 1,580 | — |
-| C facade (`engine/bindings/c/`, ours) | 1,071 | 2 |
+| App code (Rust + TypeScript + build scripts, excluding tests) | 3,860 | — |
+| App test code (Rust tests incl. in-file test modules, Vitest) | 2,570 | — |
+| C facade (`engine/bindings/`, ours) | 1,213 | 2 |
 | Vendored engine (`engine/src/`, never touched) | ~190,600 | 115 |
 
-Roughly **4,400 lines of app + facade code sit over a ~190,600-line vendored
-engine** — a ~1:43 ratio. Almost every architectural decision below is an
+Roughly **5,100 lines of app + facade code sit over a ~190,600-line vendored
+engine** — a ~1:38 ratio. Almost every architectural decision below is an
 answer to *"how do we not own 190K lines of 1990s C"*.
 
 ---
@@ -41,7 +41,7 @@ flowchart TB
     RPC["rpc.rs — API layer<br/>one Tauri command, 14 methods"]
     MGR["worker.rs::Manager — Tauri services<br/>process lifecycle, io/proc mutexes"]
     WRK["se-worker sidecar — src-tauri/worker/<br/>separate Cargo crate, 6 commands"]
-    FACADE["se_api.c facade — engine/bindings/c/<br/>29 exports, ours"]
+    FACADE["se_api.c facade — engine/bindings/<br/>29 exports, ours"]
     ENGINE["engine/src/ — Surface Evolver upstream<br/>115 files, vendored, never reformatted"]
 
     UI -- "invoke('rpc', {method, params})" --> RPC
@@ -92,7 +92,9 @@ The process-lifecycle plumbing, decoupled from RPC semantics:
   below.
 - **`main.rs`** — builds the Tauri app, registers `rpc`, builds the native
   menu, and kills the active worker on `WindowEvent::Destroyed` so quitting
-  never orphans a subprocess blocked on a stdin read.
+  never orphans a subprocess blocked on a stdin read. With the dev-only
+  `webdriver` feature it also embeds a WebDriver server for driving the app
+  in tests (see `AGENTS.md`).
 - **`lib.rs`** — splits the app into a library target purely so
   `src-tauri/tests/` has something to link against; `rpc()` is generic over
   `R: Runtime` so tests drive it with `tauri::test::MockRuntime`.
@@ -107,20 +109,16 @@ joining one would force `panic = "abort"` onto the whole Tauri app. Reads
 line-delimited JSON from stdin, dispatches to one of 6 commands
 (`load run mesh topo vertex_info dump`), writes one JSON result line back.
 Handlers are synchronous, so a blocking `se_run` simply blocks the loop —
-there is no concurrency to reason about inside the worker. `ffi.rs` holds 28
+there is no concurrency to reason about inside the worker. `ffi.rs` holds 29
 raw `unsafe extern "C"` function pointers resolved by `libloading`, checked
 against `se_api.h` by a dedicated bidirectional test (a mismatch is undefined
 behaviour, not a compile error).
 
-### C facade — `engine/bindings/c/se_api.{h,c}`
+### C facade — `engine/bindings/se_api.{h,c}`
 
-29 exported functions. Trimmed from 49 to 28 over the 0.2.1 release in two
-steps: 12 never-called accessors deleted (facet normals, edge length/density,
-generic attributes, six vertex scalar fields) took it to 37, then the
-physics/named-quantity cut removed 10 more and added `se_get_edge_wraps`.
-`se_get_facet_coords` (periodic facets drawn unwrapped, #17) made it 29. One
-return-value convention across
-all of them: `-1` bad arguments/failure, `0` not applicable to this surface,
+29 exported functions, every one called by the worker; accessors nothing
+called were removed over 0.2.1 (see `CHANGELOG.md`). One return-value
+convention across all of them: `-1` bad arguments/failure, `0` not applicable to this surface,
 `>0` elements written. This is the only file that is allowed to know both
 "how Surface Evolver represents a surface" and "what a byte buffer for an
 FFI caller looks like."
@@ -160,7 +158,7 @@ sequenceDiagram
     Se->>Se: se_pop_output() / se_get_energy() / se_get_area()
     Se-->>Mgr: result: ok=true, output, energy
     Mgr-->>Rpc: Ok(Value)
-    Rpc->>Rpc: update_session() + persist() — fire-and-forget thread
+    Rpc->>Rpc: update_session() + persist() — snapshot queued to a background thread
     Rpc-->>Tauri: Ok(Value)
     Tauri-->>Client: resolved Promise
     Client-->>UI: setStats() / appendLog() / bumpMeshVersion()
@@ -184,7 +182,8 @@ stateDiagram-v2
     Active --> Loading: createSession another file
     Active --> Active: runCommand / getMesh / topo / vertexInfo
     Active --> Active: cancel (SIGINT aborts the command)
-    Active --> NoSession: cancel falls back to kill
+    Active --> Active: cancel falls back to kill, reloads the last snapshot
+    Active --> NoSession: cancel falls back to kill, no snapshot
     Active --> NoSession: worker dies mid-request
     NoSession --> Active: getRestore
 ```
@@ -201,16 +200,20 @@ A few of those transitions hide a real decision:
   spawns, never after, so there's never a moment with two workers alive.
 - **`cancel`** → `interrupt()`: SIGINT, repeated until the running request
   finishes. SE aborts the iteration and the session and surface survive. Only
-  if that takes longer than 10 s does it `kill()`; then the in-memory surface
-  is lost, but the last auto-snapshot survives on disk for `getRestore`.
+  if that takes longer than 10 s does it `kill()`, losing the in-memory
+  surface; it then reloads that file's last auto-snapshot (taken after the
+  previous command) into a new session, which the UI adopts.
 - **worker dies mid-request** → detected as an EOF on the read side, then
   reaped. Any other read error — a pipe error or a non-JSON line — reaps the
   worker too. Engine output that escapes capture (SE `printf`s straight to
   fd 1, e.g. after `itdebug on`) can no longer cause that on Unix: the worker
   replies on a private dup of the pipe and points fd 1 at stderr
   ([#18](https://github.com/sersergious/surface-evolver/issues/18)).
-- **`getRestore`** → only fires if no session exists yet; it replays the
-  last persisted `.dmp` snapshot.
+- **`getRestore`** → restores the last persisted `.dmp` snapshot, at most once
+  and only if no session exists yet. It loads outside its lock, so a file the
+  user opens meanwhile isn't blocked and wins; an overlapping second call (React
+  StrictMode runs the mount effect twice in dev) waits for the result instead of
+  getting null; and once another file is open it returns null.
 
 `cancel` interrupts first and kills only as a fallback
 ([#35](https://github.com/sersergious/surface-evolver/issues/35)). Both work
@@ -281,7 +284,7 @@ flowchart TB
         AI["tests/{dispatch,manager}.rs — 22<br/>real worker + real libse"]
     end
     subgraph FE["Frontend"]
-        FT["ESLint + Vitest + Testing Library<br/>73 tests / 11 files"]
+        FT["ESLint + Vitest + Testing Library<br/>78 tests / 12 files"]
     end
     CT --> WF --> AU --> FT
 ```
@@ -302,19 +305,21 @@ flowchart LR
         direction TB
         C1["c-tests<br/>macos-26 + ubuntu-26.04<br/>ctest"]
         C2["backend-tests<br/>cargo check + cargo test<br/>worker (18) + app (33),<br/>against the release worker"]
-        C3["frontend-tests<br/>lint + tsc --noEmit + bun run test (60)<br/>+ production build"]
+        C3["frontend-tests<br/>lint + tsc --noEmit + bun run test (78)<br/>+ production build"]
     end
     subgraph BUILD["build.yml — workflow_run after a green push to main"]
         direction TB
         B1["macos-26 → .dmg"]
         B2["ubuntu-26.04 → .deb"]
-        B1 --> REL["publish: replace the rolling<br/>'latest' release as a whole"]
+        B1 --> REL["publish: update the rolling<br/>'latest' release in place"]
         B2 --> REL
     end
     CI -- "conclusion: success" --> BUILD
 ```
 
-There are no version tags. The `version` in `tauri.conf.json`, the Cargo
+Publishing updates `latest` in place — it moves the tag, then uploads the
+installers over the old ones — so a failed step never leaves the download
+missing. There are no version tags. The `version` in `tauri.conf.json`, the Cargo
 manifests and `package.json` exists only because the installers require a
 semver; nothing bumps it.
 
@@ -326,9 +331,8 @@ launch needs right-click ▸ Open, or `xattr -dr com.apple.quarantine`.
 ## Known limitations & constraints
 
 No roadmap exists for this project — what follows is a factual inventory of
-where the current implementation stops, not a backlog. Item ids (`F#`, `A#`,
-`P#`) are historical identifiers from the retired BACKLOG.md, still cited in
-source comments. Concrete bugs are tracked as
+where the current implementation stops, not a backlog. Item ids (`F#`) are
+historical identifiers from the retired BACKLOG.md. Concrete bugs are tracked as
 [GitHub issues](https://github.com/sersergious/surface-evolver/issues)
 (#15 onward); this section keeps the design-level limits.
 
@@ -401,15 +405,15 @@ By design (any gap here is a missing button, not missing capability — see
 From the 2026-08-09 architecture audit; unchanged by the September 2026
 test-suite work, which added coverage without touching any of these:
 
-- **Mesh payload is the ceiling.** Measured on `cube.fe`: 4 refines =
-  3,074 vertices / 6,144 facets ≈ 278 KB of JSON; 6 refines = 49,154
-  vertices / 98,304 facets ≈ 5.36 MB. It crosses two IPC boundaries with
-  several serialize/parse passes each, and refetches in full on **every**
-  mutating action, not just the elements that moved. Binary transport
-  (`tauri::ipc::Response`) would remove most of that cost.
-- **No incremental refetch.** `g N` only moves vertex positions; facets and
-  edges are invariant unless a topology op ran — detectable via
-  `se_get_topo_counts` — but the frontend always refetches everything.
+- **The mesh travels as JSON.** Measured on `cube.fe` with colours: 4 refines
+  = 6,144 facets ≈ 0.3 MB; 6 refines = 98,304 facets ≈ 6 MB. A full `getMesh`
+  round trip (worker → app → webview) takes about 7 ms and 111 ms respectively
+  in a release build; most of the larger one is JSON encoding and parsing.
+  Binary transport (`tauri::ipc::Response`) could save roughly 80 ms at that
+  size, not yet worth rewriting the protocol and `MeshData` for.
+- **No incremental refetch.** A command refetches the mesh only when what the
+  viewer draws changed (`geometry_changed`), but then refetches all of it,
+  though `g N` only moves vertex positions.
 - **No typed contract at any seam.** `rpc.rs` takes and returns
   `serde_json::Value` throughout; the frontend's payload types are unchecked
   assertions on `invoke<T>`. Drift has already shipped once (a worker field
@@ -418,10 +422,9 @@ test-suite work, which added coverage without touching any of these:
   `FileBrowserModal`, `FilePane`, `CliPane`, `EditorPane`, `ViewerPane`,
   `useMesh`) destructure the entire Zustand store with zero selectors — any
   single `appendLog` line re-renders all of them.
-- **`dispatch()` is one 14-arm match, ~180 lines**, with `get_session` /
-  `update_session` / `persist` called from 6 / 2 / 3 sites in it respectively.
-  Fine at this size; will need restructuring if the method count grows
-  further.
+- **`dispatch()` is one 14-arm match, ~150 lines**; the three methods with real
+  logic (`getRestore`, `createSession`, `cancel`) live in their own functions.
+  Fine at this size; it would need splitting further if the method count grows.
 
 ### Known bugs / rough edges
 
@@ -436,9 +439,9 @@ test-suite work, which added coverage without touching any of these:
 - `panic = "abort"` in the worker means a genuine bug kills the sidecar
   (session lost, last snapshot recoverable) instead of returning a clean
   error — an accepted trade-off for the 345 KB release profile.
-- `se_get_edge_colors` and `se_get_constraint_name` have no dedicated C-level
-  test; `se_get_edge_colors` is exercised only
-  indirectly through the worker's smoke tests.
+- `se_get_edge_colors`, `se_get_facet_coords` and `se_get_constraint_name` have
+  no dedicated C-level test; the first two are exercised only through the
+  worker's smoke tests.
 
 ### Assessed and deliberately not building
 

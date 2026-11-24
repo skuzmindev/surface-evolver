@@ -150,3 +150,17 @@ change, see `git log`.
   read properly to a screen reader: real buttons, focus kept inside the
   dialog, Escape to close. The command line keeps focus while a command
   runs, and Escape in it stops the command.
+- Refined surfaces fetch 8–9× faster: the worker wrote each mesh reply one
+  JSON token per system call. A 98,000-facet mesh now reaches the viewer in
+  about 0.1 s instead of 0.9 s, still as JSON; binary transport was measured
+  and judged not worth it at that size.
+- Opening another file frames the camera on that file, not on the previous
+  one's bounds (phelanc.fe after cube.fe used to open inside the foam).
+- Moved to React 19 and react-three-fiber 9, Tailwind 4 and daisyUI 5, and
+  Tauri 2.12, and dropped drei, heroicons, autoprefixer and postcss: a clean
+  install went from 543 packages to 329. Both themes were checked by eye.
+- The `latest` release is now updated in place, so a failed publish can no
+  longer leave the download missing.
+- For development: the app can be driven and screenshotted over WebDriver,
+  invisibly, without touching the mouse (`--features webdriver`); comments
+  were trimmed to doc comments that state what and why; stale files went.

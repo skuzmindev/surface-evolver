@@ -30,7 +30,7 @@ cmake --build cmake-build-release
 bun install
 
 # 3. Run
-bun run dev      # tauri dev — stages libse + worker sidecar + CSS, then Vite
+bun run dev      # tauri dev — stages libse + worker sidecar, then Vite
 bun run build    # → .app + .dmg under src-tauri/target/release/bundle/
 ```
 
@@ -87,7 +87,7 @@ without a code change: `ubuntu-latest` moving to GCC 15, and the `macos-14`
 retirement. Bump them on purpose, in both files.
 
 **macOS and Linux only.** Windows support was dropped on purpose (no CI job, no
-installer, no `_WIN32` code in `engine/bindings/c/`): its native `longjmp` back
+installer, no `_WIN32` code in `engine/bindings/`): its native `longjmp` back
 into the C facade crashed on every recoverable engine error, for a platform no
 user runs. Don't add Windows branches back. The vendored `engine/src/` keeps
 its own `WIN32` ifdefs untouched (Landmine 2).
@@ -148,7 +148,7 @@ se-worker  (src-tauri/worker/) ← separate Rust crate, 6 commands
        ↕ libloading dlopen
 libse-<os>-<arch>.dylib/.so    ← the C engine as a shared library
        ↕ direct calls
-engine/bindings/c/se_api.c     ← C API facade, 28 exports  ← OURS
+engine/bindings/se_api.c     ← C API facade, 29 exports  ← OURS
        ↕ internal calls
 engine/src/                    ← Surface Evolver upstream, 115 files, flat ← VENDORED
 ```
@@ -207,7 +207,7 @@ The prefix is a contract between the two files — change both or neither.
 
 ### 2. `engine/src/` is vendored upstream — never reformat it
 
-Only `engine/bindings/c/` is ours. An IDE reformat of `web.h` once produced a
+Only `engine/bindings/` is ours. An IDE reformat of `web.h` once produced a
 356-line diff that `git diff -w` reduced to five cosmetic lines. There is
 deliberately **no `.clang-format`**: one tuned to 1990s SE style would start
 reformatting the other 114 files. If your editor formats on save, exclude
@@ -310,8 +310,10 @@ Stop (`cancel`) sends the worker SIGINT and keeps doing so every 250 ms until
 the running request finishes (`Manager::interrupt`): SE aborts the iteration
 with "ERROR 2073: Command aborted due to user interrupt" and keeps the worker
 and the partly evolved surface. Only if the command doesn't stop within
-`CANCEL_GRACE` (10 s) does it fall back to killing the worker
-([#35](https://github.com/sersergious/surface-evolver/issues/35)).
+`CANCEL_GRACE` (10 s) does it fall back to killing the worker, then reload the
+file's last auto-snapshot into a new session
+([#35](https://github.com/sersergious/surface-evolver/issues/35),
+[#22](https://github.com/sersergious/surface-evolver/issues/22)).
 
 **Never restore SE's own SIGINT handler.** `catcher` (utility.c) longjmps out
 of the signal handler whenever the engine is *not* iterating (during a mesh
@@ -345,7 +347,7 @@ are gitignored. Tailwind has no output file any more: Vite compiles
 surface-evolver/
 ├── engine/
 │   ├── src/                    # Surface Evolver upstream — VENDORED, never reformat
-│   └── bindings/c/             # se_api.h / se_api.c — the C facade (ours)
+│   └── bindings/               # se_api.h / se_api.c — the C facade (ours)
 ├── src-tauri/                  # ALL Rust lives here
 │   ├── src/{main,lib,rpc,worker,menu}.rs   # lib.rs: library target so tests/ can link in
 │   ├── tests/{dispatch,manager}.rs         # app-layer integration tests, real worker+libse
@@ -405,9 +407,9 @@ packaged app.
 - **Commits**: Conventional Commits. `CHANGELOG.md` summarises the
   app's evolution in dated stages, no versions — add to the latest stage (or
   start a new one) when something user-visible changes.
-- **No version tags.** A push to `main` that passes CI replaces the rolling
-  `latest` release (`build.yml`, triggered by `workflow_run`). Don't create
-  `v*` tags; nothing consumes them.
+- **No version tags.** A push to `main` that passes CI updates the rolling
+  `latest` release in place (`build.yml`, triggered by `workflow_run`). Don't
+  create `v*` tags; nothing consumes them.
 - **`ARCHITECTURE.md`** carries the detailed design (with diagrams) plus a
   measured "Known limitations & constraints" section — foam/cellular gaps,
   the 2026-08-09 architecture audit, known bugs, and ideas assessed and
@@ -417,6 +419,12 @@ packaged app.
 - **Bugs live in GitHub issues** (#15 onward, on the "Surface Evolver — bugs"
   project board with a Severity field). Check there before re-auditing, and
   close the issue in the change that fixes it.
+- **Comments**: a doc comment (`///`, `/** */`) on each item whose name doesn't
+  tell the whole story, saying what it does and why; inline comments only for a
+  one-line why the code can't show. No issue numbers, dates or "used to"
+  history in code — git and the issues hold that. Warnings that prevent a bug
+  (lock order, FFI buffer contracts, "must match") always stay. A deliberate
+  shortcut with a known limit reads `shortcut: <the limit>, <when to upgrade>`.
 - **Prefer deleting to adding.** Several rounds of trimming got this codebase to
   its current size; the `se_run` escape hatch is what makes that safe.
 - **Update the docs in the same change.** This repo has repeatedly shipped
@@ -428,5 +436,5 @@ packaged app.
 - `ARCHITECTURE.md` — diagrams of every major flow, plus what is known-broken,
   what was assessed and deliberately not built. Read before proposing work.
 - `CHANGELOG.md` — how the app evolved, stage by stage; `git log` for detail.
-- `engine/bindings/c/se_api.h` — the entire C surface, 29 functions, documented.
+- `engine/bindings/se_api.h` — the entire C surface, 29 functions, documented.
 - Official Surface Evolver manual: <https://kenbrakke.com/evolver/html/evolver.htm>
