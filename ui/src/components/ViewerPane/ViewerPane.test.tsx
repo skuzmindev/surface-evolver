@@ -14,14 +14,18 @@ import type { MeshData } from '../../api/simulation'
 // Stable camera/controls, so FitCamera can run and be observed.
 const three = vi.hoisted(() => ({
   camera:   { position: { set: vi.fn() } },
-  controls: { target: { copy: vi.fn() }, update: vi.fn(), saveState: vi.fn(), reset: vi.fn() },
+  controls: { target: { copy: vi.fn() }, update: vi.fn(), saveState: vi.fn(), reset: vi.fn(), dispose: vi.fn() },
+  gl:       { domElement: {} },
+  set:      vi.fn(),
 }))
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children: ReactNode }) => <div data-testid="canvas">{children}</div>,
   useThree: (selector: (s: Record<string, unknown>) => unknown) => selector(three),
+  useFrame: () => {},
 }))
-vi.mock('@react-three/drei', () => ({
-  OrbitControls: () => null,
+// `new OrbitControls(...)` hands back the stub above (a constructor may return an object).
+vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
+  OrbitControls: function () { return three.controls },
 }))
 vi.mock('./MeshGeometry', () => ({
   __esModule: true,
@@ -55,6 +59,12 @@ describe('ViewerPane', () => {
   it('shows the empty state when no session is loaded', () => {
     render(<ViewerPane />)
     expect(screen.getByText('Select a .fe file to begin')).toBeInTheDocument()
+  })
+
+  it('Reset camera returns the orbit controls to their saved framing', async () => {
+    render(<ViewerPane />)
+    await userEvent.click(screen.getByTitle('Reset camera'))
+    expect(three.controls.reset).toHaveBeenCalled()
   })
 
   it('fetches and renders the mesh for the active session', async () => {

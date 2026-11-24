@@ -69,12 +69,12 @@ export SE_LIB_PATH=$PWD/cmake-build-release/libse.dylib
 
 # Frontend: ESLint (typescript-eslint + the two classic react-hooks rules;
 # warnings fail), type-check, then a real Vitest suite (jsdom + Testing
-# Library): 76 tests across 12 files covering the RPC client, API wrapper
+# Library): 77 tests across 12 files covering the RPC client, API wrapper
 # contracts, the components and file browser, the store, the menu-action hook,
 # the native menu routes and the session lifecycle. Tauri IPC is faked once per
 # file by Tauri's own mockIPC (ui/src/test/ipc.ts), so tests assert what
 # crosses the IPC boundary. All of it runs in CI.
-(cd ui && bun run lint && bunx tsc --noEmit && bun run test)        # 76 tests
+(cd ui && bun run lint && bunx tsc --noEmit && bun run test)        # 77 tests
 ```
 
 Locally, a skipped integration test prints `SE_LIB_PATH unset — skipping …` and

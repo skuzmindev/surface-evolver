@@ -1,8 +1,7 @@
-import { useRef, useEffect, useState, useMemo } from 'react'
+import { useRef, useEffect, useState, useMemo, type MutableRefObject } from 'react'
 import * as THREE from 'three'
-import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
-import { ArrowPathIcon, CursorArrowRaysIcon } from '@heroicons/react/24/outline'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
 import { useMesh } from '../../hooks/useMesh'
 import { useMenuAction } from '../../hooks/useMenuAction'
 import { useThemeColors } from '../../hooks/useThemeColors'
@@ -15,6 +14,35 @@ import VertexInspector from './VertexInspector'
 
 const MODES: RenderMode[] = ['solid', 'wireframe', 'xray']
 const MODE_LABEL: Record<RenderMode, string> = { solid: 'Solid', wireframe: 'Wire', xray: 'X-Ray' }
+
+// Heroicons 24/outline (MIT), inlined: two icons didn't justify a dependency.
+function Icon({ d }: { d: string }) {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d={d} />
+    </svg>
+  )
+}
+const ARROW_PATH = 'M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99'
+const CURSOR_RAYS = 'M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59'
+
+// three's own OrbitControls, wired the way drei's wrapper did (damped, updated
+// every frame, registered as R3F's default `controls` for FitCamera) without
+// drei's ~20 transitive dependencies.
+function Controls({ controlsRef }: { controlsRef: MutableRefObject<OrbitControlsImpl | null> }) {
+  const camera = useThree(s => s.camera)
+  const dom    = useThree(s => s.gl.domElement)
+  const set    = useThree(s => s.set)
+  const controls = useMemo(() => new OrbitControlsImpl(camera, dom), [camera, dom])
+  useFrame(() => controls.update(), -1)
+  useEffect(() => {
+    controls.enableDamping = true
+    controlsRef.current = controls
+    set({ controls })
+    return () => { set({ controls: null }); controlsRef.current = null; controls.dispose() }
+  }, [controls, controlsRef, set])
+  return null
+}
 
 // Frames the camera on the first mesh of each session (a new file, a reload,
 // a restore), not on every refetch: a `g 1` between orbits used to throw away
@@ -50,8 +78,7 @@ function FitCamera({ mesh, fitKey }: { mesh: MeshData | null; fitKey: string | n
 export default function ViewerPane() {
   const { sessionId } = useStore()
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const controlsRef = useRef<any>(null)
+  const controlsRef = useRef<OrbitControlsImpl | null>(null)
   const [mode,      setMode]      = useState<RenderMode>('solid')
   const [inspect,    setInspect]    = useState(false)
   const [picked,     setPicked]     = useState<VertexInfo | null>(null)
@@ -124,7 +151,7 @@ export default function ViewerPane() {
         <button
           className="btn btn-xs bg-base-300/80 border-base-300 hover:bg-base-300 text-base-content"
           onClick={() => controlsRef.current?.reset()} title="Reset camera"
-        ><ArrowPathIcon className="w-4 h-4" /></button>
+        ><Icon d={ARROW_PATH} /></button>
         <button
           className="btn btn-xs bg-base-300/80 border-base-300 hover:bg-base-300 text-base-content"
           onClick={() => setMode(m => MODES[(MODES.indexOf(m) + 1) % MODES.length])}
@@ -135,7 +162,7 @@ export default function ViewerPane() {
           onClick={() => { setInspect(i => !i); setPicked(null); setPickedPos(null) }}
           disabled={!sessionId}
           title="Inspect: click a vertex; show body centroids"
-        ><CursorArrowRaysIcon className="w-4 h-4" /></button>
+        ><Icon d={CURSOR_RAYS} /></button>
       </div>
 
       {inspect && picked && (
@@ -179,7 +206,7 @@ export default function ViewerPane() {
             {pickedPos && <VertexMarker position={pickedPos} radius={meshRadius * 0.025} />}
           </>
         )}
-        <OrbitControls ref={controlsRef} makeDefault />
+        <Controls controlsRef={controlsRef} />
         <FitCamera mesh={mesh} fitKey={sessionId} />
       </Canvas>
     </div>
