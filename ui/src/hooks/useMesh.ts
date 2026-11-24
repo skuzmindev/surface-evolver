@@ -6,7 +6,12 @@ import { useStore } from '../store/useStore'
 // refetching whenever the surface changes (meshVersion bump).
 export function useMesh() {
   const { sessionId, meshVersion, appendLog } = useStore()
-  const [data, setData]             = useState<MeshData | null>(null)
+  // Tagged with the session it came from: right after a switch, the previous
+  // file's mesh must not count as this one's. FitCamera framed it, marked the
+  // new session fitted, and opened phelanc.fe from inside the foam.
+  const [fetched, setFetched]       = useState<{ sid: string; mesh: MeshData } | null>(null)
+  const setData = (mesh: MeshData | null) => setFetched(mesh && sessionId ? { sid: sessionId, mesh } : null)
+  const data = fetched?.sid === sessionId ? fetched.mesh : null
   const [isFetching, setIsFetching] = useState(false)
 
   useEffect(() => {

@@ -122,6 +122,25 @@ describe('ViewerPane', () => {
     await waitFor(() => expect(three.camera.position.set).toHaveBeenCalledTimes(2))
   })
 
+  it('after a file switch, frames the new file\'s mesh, not the previous one', async () => {
+    three.camera.position.set.mockClear()
+    useStore.setState({ sessionId: 's1' })
+    vi.mocked(getMesh).mockResolvedValueOnce(mesh)               // a unit-sized file
+    render(<ViewerPane />)
+    await waitFor(() => expect(three.camera.position.set).toHaveBeenCalledTimes(1))
+
+    let resolveBig!: (m: MeshData) => void
+    vi.mocked(getMesh).mockReturnValueOnce(new Promise(r => { resolveBig = r }))
+    act(() => useStore.setState({ sessionId: 's2' }))            // open a 100× larger file
+    await new Promise(r => setTimeout(r, 0))
+    expect(three.camera.position.set).toHaveBeenCalledTimes(1)   // not framed on the old mesh
+
+    await act(async () => resolveBig({ ...mesh, vertices: mesh.vertices.map(v => v.map(c => c * 100)) }))
+    await waitFor(() => expect(three.camera.position.set).toHaveBeenCalledTimes(2))
+    const [x] = three.camera.position.set.mock.calls[1]
+    expect(x).toBeGreaterThan(100)                               // backed off to fit it
+  })
+
   it('the Loading badge clears when the session ends mid-fetch (#34)', async () => {
     useStore.setState({ sessionId: 's1' })
     vi.mocked(getMesh).mockReturnValue(new Promise(() => {}))   // never settles
