@@ -61,7 +61,11 @@ fn take_ipc_input() -> std::fs::File {
 
 fn send(v: &Value) {
     let mut out = PIPE.get_or_init(|| Mutex::new(take_json_pipe())).lock().unwrap_or_else(|e| e.into_inner());
-    let _ = writeln!(out, "{v}");
+    // One write: `writeln!(out, "{v}")` on this unbuffered File issued a write
+    // syscall per JSON token, ~95% of a 98k-facet mesh reply's 940 ms.
+    let mut line = serde_json::to_vec(v).unwrap_or_default();
+    line.push(b'\n');
+    let _ = out.write_all(&line);
     let _ = out.flush();
 }
 
