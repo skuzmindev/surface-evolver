@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo, type MutableRefObject } from 'react'
+import { useRef, useEffect, useState, useMemo, type RefObject } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls as OrbitControlsImpl } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -29,7 +29,7 @@ const CURSOR_RAYS = 'M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.
 // three's own OrbitControls, wired the way drei's wrapper did (damped, updated
 // every frame, registered as R3F's default `controls` for FitCamera) without
 // drei's ~20 transitive dependencies.
-function Controls({ controlsRef }: { controlsRef: MutableRefObject<OrbitControlsImpl | null> }) {
+function Controls({ controlsRef }: { controlsRef: RefObject<OrbitControlsImpl | null> }) {
   const camera = useThree(s => s.camera)
   const dom    = useThree(s => s.gl.domElement)
   const set    = useThree(s => s.set)
