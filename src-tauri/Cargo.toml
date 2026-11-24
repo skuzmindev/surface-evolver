@@ -15,6 +15,19 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+# Off by default: an in-app W3C WebDriver server on 127.0.0.1:4445, for
+# driving and screenshotting the app without the real mouse or focus.
+# `bunx tauri dev --features webdriver`. Never enable it in a release build.
+tauri-plugin-webdriver = { version = "0.2", optional = true }
+
+# webdriver only: switches off WKWebView's window-occlusion detection (a
+# private WebKit setting) so the viewer keeps drawing while the window is
+# covered. Already in the tree via wry.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+
+[features]
+webdriver = ["dep:tauri-plugin-webdriver", "dep:objc2"]
 
 # "test" pulls in tauri::test (MockRuntime) — dev-only, never ships in a
 # release build. rpc.rs is generic over R: Runtime specifically so tests can

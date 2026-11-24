@@ -112,6 +112,26 @@ done
 Driving the worker directly like this is also the fastest way to reproduce any
 engine-level bug without going through the UI.
 
+To check a UI change in the real app (the viewer included) without taking over
+the screen, start it with the dev-only `webdriver` feature and drive it with
+`scripts/wd.ts`. Clicks are JS clicks and screenshots come from the webview
+itself, so the mouse never moves and the window can sit behind others:
+
+```bash
+bun run tauri dev --features webdriver        # WebDriver on 127.0.0.1:4445
+bun scripts/wd.ts /tmp/shots \
+  "click://button[@aria-label='Add .fe file']" \
+  "click://div[@role='dialog']//button[normalize-space()='cube.fe']" wait:3 \
+  "click://input[@aria-label='Surface Evolver command']" "keys:g 5\n" wait:2 shot:cube
+```
+
+Type with `keys:` (W3C key actions), never WebDriver's element send-keys: that
+sets the input's value behind React's back, so state stays empty and Enter runs
+nothing. The feature also turns off WKWebView's occlusion detection (a private
+WebKit setting): without it a covered window gets 0 frames per second and the
+viewer freezes on its last frame, and `backgroundThrottling` doesn't help.
+Never enable the feature in a release build; the server has no auth.
+
 ## Architecture
 
 ```
@@ -337,7 +357,7 @@ surface-evolver/
 │   └── hooks/                  # useMesh, useMenuAction, useThemeColors
 ├── fe/                         # 20 bundled .fe datafiles + OCTA.WLF
 ├── tests/c/test_se_api.c       # CTest suite for the C facade
-├── scripts/                    # build-native, tauri-before, make-icons (Bun)
+├── scripts/                    # build-native, tauri-before, make-icons, wd (Bun)
 ├── landing/                    # gitignored clone of the project site (separate repo)
 ├── ARCHITECTURE.md             # diagrams + detailed design, known limitations
 └── CHANGELOG.md                # the app's history, stage by stage
@@ -369,6 +389,7 @@ Paths resolve automatically in `rpc.rs`. These are explicit overrides only:
 | `SE_FE_DIR` | Directory of bundled `.fe` datafiles |
 | `SE_WORKER_PATH` | Worker sidecar binary |
 | `SE_STATE_DIR` | Session-persistence dir (default `~/.surface-evolver`) |
+| `TAURI_WEBDRIVER_PORT` | WebDriver port with `--features webdriver` (default 4445) |
 
 Uploads and editor saves go to `~/.surface-evolver/fe/`; user files shadow
 bundled ones of the same name, because the bundled `fe/` may be read-only in a
