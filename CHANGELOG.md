@@ -137,3 +137,5 @@ change, see `git log`.
 - Dropped Windows. A Windows CI job showed the native installer crashing on
   every recoverable engine error, and no user runs Windows, so the app now
   ships for macOS and Linux only.
+- Opening a file at startup no longer waits for the previous session's
+  surface to finish restoring: the restore gives way to the file you open.

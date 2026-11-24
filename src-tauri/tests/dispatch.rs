@@ -183,7 +183,7 @@ fn get_restore_is_a_noop_once_the_user_has_already_loaded_a_file() {
     let t = TestApp::new("restore-noop");
     t.call("createSession", json!({ "fe_file": "cube.fe" })).expect("createSession");
     // A late getRestore (e.g. a startup race) must not kill the fresh
-    // worker underneath the user — rpc.rs's try_restore bails when a
+    // worker underneath the user — rpc.rs's getRestore skips the load when a
     // session already exists.
     let restore = t.call("getRestore", Value::Null).expect("getRestore");
     assert!(restore.is_null());

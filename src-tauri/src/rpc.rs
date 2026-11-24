@@ -19,10 +19,22 @@ pub struct AppState {
     /// a load kills the previous one. A map here would only ever accumulate ids
     /// that no worker serves.
     pub session: Mutex<Option<Value>>,
-    /// None = restore not attempted yet; Some(v) = memoized result (v may be null).
-    pub restore: Mutex<Option<Value>>,
+    /// The startup restore, attempted at most once. Lock order: `restore`
+    /// before `session`, never the other way round.
+    pub restore: Mutex<Restore>,
     /// Lazily started on the first snapshot — see `persist`.
     persist_tx: Mutex<Option<mpsc::Sender<()>>>,
+}
+
+#[derive(Default)]
+pub enum Restore {
+    #[default]
+    NotTried,
+    /// A getRestore is loading the snapshot. The `restore` lock is not held
+    /// meanwhile, so a createSession can supersede it (#32).
+    Running,
+    /// Finished or superseded: the restored session record, or null.
+    Done(Value),
 }
 
 // ── path resolution (port of bootstrap-paths.ts + config.ts) ───────────────
@@ -205,22 +217,15 @@ fn snapshot(state: &AppState) {
     }
 }
 
-fn try_restore<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Value {
-    // Restore is lazy (first getRestore call). If the user already loaded a
-    // file, restoring now would kill their fresh worker and leave the UI
-    // holding a session id the worker no longer serves — bail instead.
-    if lock(&state.session).is_some() {
-        return Value::Null;
-    }
-    let Ok(raw) = fs::read_to_string(persist_file()) else { return Value::Null };
-    let Ok(saved) = serde_json::from_str::<Value>(&raw) else { return Value::Null };
-    let (Some(dmp), Some(fe_file)) = (saved["dmp"].as_str(), saved["fe_file"].as_str()) else {
-        return Value::Null;
-    };
+/// Load the last persisted snapshot into a fresh worker and return its session
+/// record. Not registered in `state.session`: the caller decides whether it
+/// still should be.
+fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Option<Value> {
+    let raw = fs::read_to_string(persist_file()).ok()?;
+    let saved: Value = serde_json::from_str(&raw).ok()?;
+    let (dmp, fe_file) = (saved["dmp"].as_str()?, saved["fe_file"].as_str()?);
     let tmp = std::env::temp_dir().join(format!("se-restore-{}.dmp", uuid::Uuid::new_v4()));
-    if fs::write(&tmp, dmp).is_err() {
-        return Value::Null;
-    }
+    fs::write(&tmp, dmp).ok()?;
     let sid = uuid::Uuid::new_v4().to_string();
     let loaded = state.manager.load_session(
         &sid,
@@ -229,19 +234,12 @@ fn try_restore<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Value {
         &lib_path(app),
     );
     let _ = fs::remove_file(&tmp);
-    match loaded {
-        Ok(stats) => {
-            let session = session_from_stats(&sid, fe_file, &stats);
-            *lock(&state.session) = Some(session.clone());
-            session
-        }
-        // Keep the snapshot. A load failure here is just as likely to be a
-        // missing dylib or an unspawnable sidecar as a bad dump, and deleting
-        // it costs the user real work for an unrelated environment problem.
-        // Genuinely malformed snapshots fall out at the parse above, and the
-        // next successful command overwrites this one anyway.
-        Err(_) => Value::Null,
-    }
+    // On failure, keep the snapshot. A load failure here is just as likely to
+    // be a missing dylib or an unspawnable sidecar as a bad dump, and deleting
+    // it costs the user real work for an unrelated environment problem.
+    // Genuinely malformed snapshots fall out at the parse above, and the next
+    // successful command overwrites this one anyway.
+    loaded.ok().map(|stats| session_from_stats(&sid, fe_file, &stats))
 }
 
 // ── the command ─────────────────────────────────────────────────────────────
@@ -284,12 +282,35 @@ fn end_session_if_worker_gone(state: &AppState, err: String) -> String {
 fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Result<Value, String> {
     let state: State<AppState> = app.state();
     match method {
+        // Claim the attempt under the lock, then load outside it: holding
+        // `restore` across a worker spawn made every createSession wait (#32).
         "getRestore" => {
-            let mut memo = lock(&state.restore);
-            if memo.is_none() {
-                *memo = Some(try_restore(app, &state));
+            {
+                let mut r = lock(&state.restore);
+                match &*r {
+                    Restore::NotTried => *r = Restore::Running,
+                    Restore::Running => return Ok(Value::Null),
+                    Restore::Done(v) => return Ok(v.clone()),
+                }
             }
-            Ok(memo.clone().unwrap())
+            // A file the user already opened wins over a startup restore.
+            let user_loaded = lock(&state.session).is_some();
+            let restored = if user_loaded { None } else { load_snapshot(app, &state) };
+            let mut r = lock(&state.restore);
+            let session = match (&*r, restored) {
+                // Still ours: no createSession arrived while the snapshot loaded.
+                (Restore::Running, Some(s)) => {
+                    *lock(&state.session) = Some(s.clone());
+                    s
+                }
+                // Superseded (its load already killed this worker) or nothing
+                // to restore.
+                _ => Value::Null,
+            };
+            if matches!(*r, Restore::Running) {
+                *r = Restore::Done(session.clone());
+            }
+            Ok(session)
         }
 
         "listFiles" => {
@@ -316,12 +337,13 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             if !fe_path.exists() {
                 return Err(format!("File not found: {}", sanitize(fe_file)));
             }
-            // A user-initiated load supersedes startup restore: mark it
-            // consumed so a late getRestore can't kill this session's worker.
+            // A user-initiated load supersedes startup restore. Marking it done
+            // stops one from starting; one already Running sees this when its
+            // load returns, and load_session below kills its worker anyway.
             {
-                let mut memo = lock(&state.restore);
-                if memo.is_none() {
-                    *memo = Some(Value::Null);
+                let mut r = lock(&state.restore);
+                if !matches!(*r, Restore::Done(_)) {
+                    *r = Restore::Done(Value::Null);
                 }
             }
             let sid = uuid::Uuid::new_v4().to_string();

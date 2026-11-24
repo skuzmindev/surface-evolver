@@ -141,6 +141,10 @@ impl Manager {
         // read fails, so killing first breaks the deadlock.
         self.kill();
         let mut io = lock(&self.io);
+        // And again: a worker spawned by another load while we waited for `io`
+        // (a startup restore) would otherwise be overwritten in `proc` below
+        // without being killed, and outlive the app.
+        self.kill();
         *io = None;
 
         let mut cmd = Command::new(worker_bin);
