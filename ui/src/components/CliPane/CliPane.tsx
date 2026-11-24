@@ -150,7 +150,7 @@ export default function CliPane() {
         <span className="text-success text-sm font-mono select-none shrink-0">$</span>
         <input
           ref={inputRef}
-          className="flex-1 bg-transparent border-none outline-none text-sm font-mono text-base-content caret-primary placeholder:text-base-content/30 disabled:cursor-not-allowed"
+          className="flex-1 bg-transparent border-none outline-hidden text-sm font-mono text-base-content caret-primary placeholder:text-base-content/30 disabled:cursor-not-allowed"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => {

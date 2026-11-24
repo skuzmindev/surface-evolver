@@ -95,7 +95,7 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
         aria-modal="true"
         aria-labelledby="file-browser-title"
         tabIndex={-1}
-        className={`relative z-10 flex flex-col w-[28rem] max-w-[90vw] max-h-[80vh] rounded-box border border-base-300 bg-base-100 shadow-2xl overflow-hidden outline-none ${dragging ? 'ring-2 ring-inset ring-primary' : ''}`}
+        className={`relative z-10 flex flex-col w-[28rem] max-w-[90vw] max-h-[80vh] rounded-box border border-base-300 bg-base-100 shadow-2xl overflow-hidden outline-hidden ${dragging ? 'ring-2 ring-inset ring-primary' : ''}`}
         onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files) }}
         onDragOver={e => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}

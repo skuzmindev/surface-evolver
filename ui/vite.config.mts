@@ -1,9 +1,10 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   // Vitest otherwise loads a second copy of react/react-dom for test files,
   // which breaks hooks with "Cannot read properties of null (reading
   // 'useX')" — dedupe forces a single shared instance.

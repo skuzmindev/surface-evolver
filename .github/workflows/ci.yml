@@ -135,9 +135,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Compile Tailwind CSS
-        run: bun run css
-
       - name: Lint (ESLint; warnings fail too)
         run: bun run lint
 

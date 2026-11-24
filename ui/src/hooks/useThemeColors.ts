@@ -18,20 +18,20 @@ const ctx = typeof document !== 'undefined'
   : null
 
 // Read a theme colour CSS variable (e.g. --mesh) straight off :root, where it
-// is always defined for the active [data-theme]. The value is bare oklch
-// components ("65% 0.2 275"); wrap in oklch() and normalise via canvas.
+// is always defined for the active [data-theme]. The value is any CSS colour
+// (daisyUI 5 themes hold whole colours); normalise it via the canvas.
 function varColor(name: string, fallback: string): THREE.Color {
   if (!ctx) return new THREE.Color(fallback)
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
   ctx.fillStyle = fallback
-  if (raw) ctx.fillStyle = `oklch(${raw})`
+  if (raw) ctx.fillStyle = raw
   ctx.fillRect(0, 0, 1, 1)
   const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
   return new THREE.Color().setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace)
 }
 
 function read(): ThemeColors {
-  // --mesh / --mesh-edge are app-specific theme variables (tailwind.config.js):
+  // --mesh / --mesh-edge are app-specific theme variables (styles/global.css):
   // light-grey facets with near-black edges in both modes, as SE draws them.
   const surface = varColor('--mesh', '#d4d4d4')
   return {
@@ -39,9 +39,9 @@ function read(): ThemeColors {
     specular: surface.clone().lerp(new THREE.Color('#ffffff'), 0.6),
     line:     varColor('--mesh-edge', '#0a0a0a'),
     // Wireframe has no facets behind it, so a near-black edge colour vanished
-    // on the dark theme's near-black background. The theme foreground (--bc,
-    // daisyUI's base-content) contrasts with the background in both themes.
-    wire:     varColor('--bc', '#737373'),
+    // on the dark theme's near-black background. The theme foreground
+    // (daisyUI's base-content) contrasts with the background in both themes.
+    wire:     varColor('--color-base-content', '#737373'),
   }
 }
 

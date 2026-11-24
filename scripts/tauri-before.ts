@@ -1,8 +1,8 @@
 /**
  * Tauri beforeDevCommand/beforeBuildCommand — stages everything the Rust app
  * bundles: the headless libse (build-native/), the compiled se-worker sidecar
- * (src-tauri/binaries/, target-triple suffixed as externalBin requires), and
- * the compiled Tailwind CSS.
+ * (src-tauri/binaries/, target-triple suffixed as externalBin requires).
+ * Tailwind is compiled by Vite itself (@tailwindcss/vite).
  */
 import { $ } from "bun";
 import { copyFileSync, mkdirSync } from "fs";
@@ -22,6 +22,3 @@ const sidecar = `src-tauri/binaries/se-worker-${triple}`;
 await $`cargo build --release --manifest-path src-tauri/worker/Cargo.toml`;
 mkdirSync("src-tauri/binaries", { recursive: true });
 copyFileSync("src-tauri/worker/target/release/se-worker", sidecar);
-
-// 3. Tailwind
-await $`bun run --cwd ui css`;
