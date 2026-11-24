@@ -2,6 +2,8 @@
  * Drive the running app over WebDriver, without the real mouse or focus.
  * Needs the app started with the dev-only feature:
  *   bun run tauri dev --features webdriver      # server on 127.0.0.1:4445
+ *   SE_WEBDRIVER_GHOST=1 bun run tauri dev --features webdriver
+ *                                               # same, with no visible window
  *
  *   bun scripts/wd.ts OUT_DIR STEP...
  *     shot:NAME      screenshot of the webview (WebGL included) → OUT_DIR/NAME.png

@@ -21,6 +21,23 @@ fn main() {
                     let view = &*(wv.inner() as *const objc2::runtime::AnyObject);
                     let _: () = objc2::msg_send![view, _setWindowOcclusionDetectionEnabled: false];
                 })?;
+                // SE_WEBDRIVER_GHOST=1: no window for the user at all, measured
+                // to keep the viewer drawing at 60 rAF/s. Not a hidden window
+                // (it stops rendering) and not an off-screen one (macOS pulls
+                // it back into view): an accessory app (no Dock icon, never
+                // takes focus) with an ordered-in window that is fully
+                // transparent and click-through. Becoming an accessory orders
+                // the window out, which also stops rendering, so it is ordered
+                // back in without activating the app.
+                if std::env::var_os("SE_WEBDRIVER_GHOST").is_some_and(|v| v == "1") {
+                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    let ns_window = w.ns_window()? as *const objc2::runtime::AnyObject;
+                    unsafe {
+                        let _: () = objc2::msg_send![&*ns_window, setAlphaValue: 0.0f64];
+                        let _: () = objc2::msg_send![&*ns_window, setIgnoresMouseEvents: true];
+                        let _: () = objc2::msg_send![&*ns_window, orderFrontRegardless];
+                    }
+                }
             }
             let m = menu::build(app)?;
             app.set_menu(m)?;

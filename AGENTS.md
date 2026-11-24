@@ -118,7 +118,7 @@ the screen, start it with the dev-only `webdriver` feature and drive it with
 itself, so the mouse never moves and the window can sit behind others:
 
 ```bash
-bun run tauri dev --features webdriver        # WebDriver on 127.0.0.1:4445
+SE_WEBDRIVER_GHOST=1 bun run tauri dev --features webdriver   # WebDriver on 127.0.0.1:4445
 bun scripts/wd.ts /tmp/shots \
   "click://button[@aria-label='Add .fe file']" \
   "click://div[@role='dialog']//button[normalize-space()='cube.fe']" wait:3 \
@@ -130,6 +130,10 @@ sets the input's value behind React's back, so state stays empty and Enter runs
 nothing. The feature also turns off WKWebView's occlusion detection (a private
 WebKit setting): without it a covered window gets 0 frames per second and the
 viewer freezes on its last frame, and `backgroundThrottling` doesn't help.
+`SE_WEBDRIVER_GHOST=1` keeps the window out of the user's way entirely: no Dock
+icon, never takes focus, fully transparent and click-through, still rendering at
+60 fps. Leave it off to watch a run. (A hidden window stops rendering, and macOS
+pulls an off-screen one back into view; main.rs has the details.)
 Never enable the feature in a release build; the server has no auth.
 
 ## Architecture
@@ -390,6 +394,7 @@ Paths resolve automatically in `rpc.rs`. These are explicit overrides only:
 | `SE_WORKER_PATH` | Worker sidecar binary |
 | `SE_STATE_DIR` | Session-persistence dir (default `~/.surface-evolver`) |
 | `TAURI_WEBDRIVER_PORT` | WebDriver port with `--features webdriver` (default 4445) |
+| `SE_WEBDRIVER_GHOST` | `1` with `--features webdriver`: invisible, unfocusable window (still renders) |
 
 Uploads and editor saves go to `~/.surface-evolver/fe/`; user files shadow
 bundled ones of the same name, because the bundled `fe/` may be read-only in a
