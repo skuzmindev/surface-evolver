@@ -1,4 +1,4 @@
-//! Checks that `src/ffi.rs` matches `engine/bindings/c/se_api.h`. A mismatched
+//! Checks that `src/ffi.rs` matches `engine/bindings/se_api.h`. A mismatched
 //! signature is undefined behaviour at runtime, not a compile error, so a header
 //! change not mirrored in Rust must fail here instead.
 //!
@@ -98,7 +98,7 @@ fn parse_rust(src: &str) -> BTreeMap<String, (Vec<String>, String)> {
 
 #[test]
 fn ffi_signatures_match_the_c_header() {
-    let header = parse_header(&repo_file("engine/bindings/c/se_api.h"));
+    let header = parse_header(&repo_file("engine/bindings/se_api.h"));
     let rust = parse_rust(&repo_file("src-tauri/worker/src/ffi.rs"));
 
     // A floor, not a count: catches a parser that silently matches nothing.

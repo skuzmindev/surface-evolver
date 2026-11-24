@@ -4,7 +4,7 @@
 //! life (the engine can't be reset), and leaking makes the resolved symbols
 //! plain `fn` pointers instead of lifetime-bound `Symbol`s.
 //!
-//! Every signature must match engine/bindings/c/se_api.h exactly: a mismatch is
+//! Every signature must match engine/bindings/se_api.h exactly: a mismatch is
 //! undefined behaviour, not a compile error (`tests/ffi_signatures.rs` checks).
 
 use libloading::{Library, Symbol};

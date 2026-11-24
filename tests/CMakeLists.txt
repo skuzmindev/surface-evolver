@@ -9,7 +9,7 @@ add_executable(test_se_api c/test_se_api.c)
 
 target_include_directories(test_se_api PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/src
-    ${CMAKE_SOURCE_DIR}/engine/bindings/c
+    ${CMAKE_SOURCE_DIR}/engine/bindings
 )
 
 find_package(Threads REQUIRED)   # test_sigint sends SIGINT from a second thread

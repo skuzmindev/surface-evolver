@@ -145,9 +145,9 @@ add_library(se SHARED
     engine/src/psgraph.c
     engine/src/painter.c
     engine/src/geomgraph.c
-    engine/bindings/c/se_api.c
+    engine/bindings/se_api.c
 )
-target_include_directories(se PRIVATE engine/src engine/bindings/c)
+target_include_directories(se PRIVATE engine/src engine/bindings)
 target_link_libraries(se PRIVATE m)
 
 # ── Tests ────────────────────────────────────────────────────────────────────
