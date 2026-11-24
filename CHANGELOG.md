@@ -139,3 +139,7 @@ change, see `git log`.
   ships for macOS and Linux only.
 - Opening a file at startup no longer waits for the previous session's
   surface to finish restoring: the restore gives way to the file you open.
+- A crash in one pane (viewer, editor, file list or command line) now
+  replaces only that pane, with a "Try again" that brings it back without
+  losing the session. The whole-window Reload stays as the last resort and
+  no longer revives a session that had already been replaced.

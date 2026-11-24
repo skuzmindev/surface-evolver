@@ -242,6 +242,14 @@ fn load_snapshot<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> Option<Val
     loaded.ok().map(|stats| session_from_stats(&sid, fe_file, &stats))
 }
 
+/// Whether `s` is the session the worker currently serves.
+fn is_live(state: &AppState, s: &Value) -> bool {
+    !s.is_null()
+        && lock(&state.session)
+            .as_ref()
+            .is_some_and(|live| live["session_id"] == s["session_id"])
+}
+
 // ── the command ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -290,7 +298,11 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
                 match &*r {
                     Restore::NotTried => *r = Restore::Running,
                     Restore::Running => return Ok(Value::Null),
-                    Restore::Done(v) => return Ok(v.clone()),
+                    // Only while it is still the live session: a later call
+                    // (an error-boundary reload) must not adopt a dead id (#33).
+                    Restore::Done(v) => {
+                        return Ok(if is_live(&state, v) { v.clone() } else { Value::Null });
+                    }
                 }
             }
             // A file the user already opened wins over a startup restore.

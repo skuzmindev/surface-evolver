@@ -172,7 +172,7 @@ function Inner() {
             <>
               <div className="shrink-0 h-full overflow-hidden bg-base-200"
                    style={{ width: sidebarWidth }}>
-                <FilePane />
+                <ErrorBoundary name="file list"><FilePane /></ErrorBoundary>
               </div>
 
               <div
@@ -187,7 +187,7 @@ function Inner() {
           {/* Editor (middle) */}
           <div className="shrink-0 h-full overflow-hidden"
                style={{ width: editorWidth }}>
-            <EditorPane />
+            <ErrorBoundary name="editor"><EditorPane /></ErrorBoundary>
           </div>
 
           {/* Editor drag handle */}
@@ -201,7 +201,7 @@ function Inner() {
           {/* Right column: viewer on top, CLI/output below */}
           <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
             <div className="overflow-hidden min-h-0" style={{ height: `${viewerPct}%` }}>
-              <ViewerPane />
+              <ErrorBoundary name="viewer"><ViewerPane /></ErrorBoundary>
             </div>
 
             {/* Viewer / output drag handle */}
@@ -213,7 +213,7 @@ function Inner() {
             </div>
 
             <div className="flex-1 min-h-0 overflow-hidden">
-              <CliPane />
+              <ErrorBoundary name="command line"><CliPane /></ErrorBoundary>
             </div>
           </div>
 

@@ -172,9 +172,17 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
     assert!(restored["session_id"].is_string());
 
     // A second call is memoized, not re-read from disk / re-parsed.
-    let restored2 = tauri::async_runtime::block_on(rpc::rpc(handle2, "getRestore".into(), Value::Null))
+    let restored2 = tauri::async_runtime::block_on(rpc::rpc(handle2.clone(), "getRestore".into(), Value::Null))
         .expect("getRestore (memoized)");
     assert_eq!(restored2, restored);
+
+    // #33: once the user opens another file, the restored session is dead. A
+    // later getRestore (an error-boundary reload) must not hand it back.
+    tauri::async_runtime::block_on(rpc::rpc(handle2.clone(), "createSession".into(), json!({ "fe_file": "sphere.fe" })))
+        .expect("createSession after restore");
+    let after = tauri::async_runtime::block_on(rpc::rpc(handle2, "getRestore".into(), Value::Null))
+        .expect("getRestore (after a new load)");
+    assert!(after.is_null(), "getRestore returned a replaced session: {after}");
 }
 
 #[test]
