@@ -135,7 +135,7 @@ add_executable(surface_evolver
 )
 target_link_libraries(surface_evolver PRIVATE m ${SE_GRAPH_LIBS})
 
-# ── Shared library (libse) for Python / FFI bindings ────────────────────────
+# ── Shared library (libse), loaded by the worker sidecar over FFI ──────────
 # Always built headless — library callers have no display.
 add_library(se SHARED
     ${SE_CORE_SOURCES}
