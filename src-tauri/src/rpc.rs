@@ -6,7 +6,7 @@ use crate::worker::{lock, Manager};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Condvar, Mutex};
 use tauri::{AppHandle, Manager as TauriManager, Runtime, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -22,6 +22,8 @@ pub struct AppState {
     /// The startup restore, attempted at most once. Lock order: `restore`
     /// before `session`, never the other way round.
     pub restore: Mutex<Restore>,
+    /// Signalled whenever `restore` leaves Running.
+    restore_done: Condvar,
     /// Lazily started on the first snapshot — see `persist`.
     persist_tx: Mutex<Option<mpsc::Sender<()>>>,
 }
@@ -31,7 +33,8 @@ pub enum Restore {
     #[default]
     NotTried,
     /// A getRestore is loading the snapshot. The `restore` lock is not held
-    /// meanwhile, so a createSession can supersede it (#32).
+    /// meanwhile, so a createSession can supersede it (#32). Another
+    /// getRestore waits on `restore_done` for the result.
     Running,
     /// Finished or superseded: the restored session record, or null.
     Done(Value),
@@ -297,15 +300,21 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
         // `restore` across a worker spawn made every createSession wait (#32).
         "getRestore" => {
             {
-                let mut r = lock(&state.restore);
+                // A second getRestore (React StrictMode runs the mount effect
+                // twice in dev, and ignores the first call's answer) waits for
+                // the running one rather than answer null. createSession never
+                // waits: it only marks the restore superseded.
+                let mut r = state
+                    .restore_done
+                    .wait_while(lock(&state.restore), |r| matches!(r, Restore::Running))
+                    .unwrap_or_else(|e| e.into_inner());
                 match &*r {
-                    Restore::NotTried => *r = Restore::Running,
-                    Restore::Running => return Ok(Value::Null),
                     // Only while it is still the live session: a later call
                     // (an error-boundary reload) must not adopt a dead id (#33).
                     Restore::Done(v) => {
                         return Ok(if is_live(&state, v) { v.clone() } else { Value::Null });
                     }
+                    _ => *r = Restore::Running,
                 }
             }
             // A file the user already opened wins over a startup restore.
@@ -325,6 +334,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
             if matches!(*r, Restore::Running) {
                 *r = Restore::Done(session.clone());
             }
+            state.restore_done.notify_all();
             Ok(session)
         }
 
@@ -359,6 +369,7 @@ fn dispatch<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
                 let mut r = lock(&state.restore);
                 if !matches!(*r, Restore::Done(_)) {
                     *r = Restore::Done(Value::Null);
+                    state.restore_done.notify_all();
                 }
             }
             let sid = uuid::Uuid::new_v4().to_string();

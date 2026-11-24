@@ -166,8 +166,23 @@ fn get_restore_resumes_from_a_persisted_snapshot() {
         .build(mock_context(noop_assets()))
         .expect("build second mock app");
     let handle2 = app2.handle().clone();
-    let restored = tauri::async_runtime::block_on(rpc::rpc(handle2.clone(), "getRestore".into(), Value::Null))
-        .expect("getRestore (resume)");
+    // Two overlapping calls, as React StrictMode's double-run mount effect
+    // makes in dev: the one that finds the restore still running must wait
+    // for it, not answer null (the UI ignores the first call's answer).
+    // Released together, so the second lands while the first's worker spawns.
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let calls: Vec<_> = (0..2)
+        .map(|_| {
+            let (h, gate) = (handle2.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                tauri::async_runtime::block_on(rpc::rpc(h, "getRestore".into(), Value::Null))
+            })
+        })
+        .collect();
+    let mut results = calls.into_iter().map(|c| c.join().unwrap().expect("getRestore (resume)"));
+    let (restored, overlapping) = (results.next().unwrap(), results.next().unwrap());
+    assert_eq!(overlapping, restored, "the overlapping getRestore didn't get the restored session");
     assert_eq!(restored["fe_file"], "cube.fe");
     assert!(restored["session_id"].is_string());
 
