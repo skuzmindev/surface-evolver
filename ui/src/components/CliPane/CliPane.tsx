@@ -153,9 +153,18 @@ export default function CliPane() {
           className="flex-1 bg-transparent border-none outline-none text-sm font-mono text-base-content caret-primary placeholder:text-base-content/30 disabled:cursor-not-allowed"
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleRun()}
+          onKeyDown={e => {
+            if (e.key === 'Enter') handleRun()
+            else if (e.key === 'Escape' && busy) handleStop()
+          }}
           placeholder={sessionId ? 'SE command…' : 'Load a file first'}
-          disabled={!sessionId || busy}
+          aria-label="Surface Evolver command"
+          // readOnly, not disabled, while a command runs: a disabled input
+          // drops focus to the page and can't take it back until React
+          // re-renders it enabled (#25). Esc in it stops the command.
+          disabled={!sessionId}
+          readOnly={busy}
+          aria-busy={busy}
           spellCheck={false}
           autoComplete="off"
         />
@@ -163,7 +172,7 @@ export default function CliPane() {
           className={`btn btn-xs shrink-0 ${busy ? 'btn-error' : 'btn-primary'}`}
           onClick={busy ? handleStop : handleRun}
           disabled={!sessionId || (!busy && !input.trim())}
-          title={busy ? 'Kill the engine process' : 'Run command'}
+          title={busy ? 'Stop the running command (Esc)' : 'Run command'}
         >
           {busy ? 'Stop' : 'Run'}
         </button>

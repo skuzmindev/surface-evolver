@@ -15,6 +15,28 @@ function setup() {
 }
 
 describe('FileBrowserModal', () => {
+  it('is a keyboard-usable dialog: focus inside, Tab wraps, Escape closes (#25)', async () => {
+    answerRpc({ listFiles: ['cube.fe', 'phelanc.fe'] })
+    const { onPick, onClose } = setup()
+    const user = userEvent.setup()
+
+    const dialog = screen.getByRole('dialog', { name: 'Open .fe file' })
+    expect(dialog).toHaveFocus()
+    // Library entries are real buttons, reachable and operable from the keyboard.
+    const entry = await screen.findByRole('button', { name: 'phelanc.fe' })
+    entry.focus()
+    await user.keyboard('{Enter}')
+    expect(onPick).toHaveBeenCalledWith('phelanc.fe')
+
+    // Tab from the last control wraps to the first instead of leaving the dialog.
+    screen.getByRole('button', { name: '+ Upload .fe' }).focus()
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalled()
+  })
+
   it('lists the library and opens the file you click', async () => {
     answerRpc({ listFiles: ['cube.fe', 'phelanc.fe'] })
     const { onPick, onClose } = setup()

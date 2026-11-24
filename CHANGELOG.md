@@ -146,3 +146,7 @@ change, see `git log`.
 - When Stop has to end an unresponsive engine, the file's last auto-saved
   surface is reloaded straight away, instead of leaving you to reopen the
   file (which also overwrote that snapshot).
+- The file tabs, the file library and its dialog work from the keyboard and
+  read properly to a screen reader: real buttons, focus kept inside the
+  dialog, Escape to close. The command line keeps focus while a command
+  runs, and Escape in it stops the command.

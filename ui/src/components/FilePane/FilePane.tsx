@@ -106,6 +106,7 @@ export default function FilePane() {
           className="btn btn-ghost btn-xs btn-square text-base-content/60 hover:text-base-content"
           onClick={() => setBrowserOpen(true)}
           title="Add .fe file"
+          aria-label="Add .fe file"
         >+</button>
       </div>
 
@@ -126,11 +127,13 @@ export default function FilePane() {
 
             return (
               <li key={f} className={isBusy ? 'opacity-40 pointer-events-none' : ''}>
-                <a
-                  onClick={() => !isBusy && handleSelect(f)}
+                {/* A row, not an <a>: links without href aren't keyboard
+                    reachable, and the close button can't nest inside a button,
+                    so select and close are sibling buttons (#25). */}
+                <div
                   title={hasError ? fileErrors[f] : f}
                   className={[
-                    'flex items-center gap-1 py-1.5 font-mono text-xs leading-none rounded',
+                    'flex items-center gap-1 py-0 font-mono text-xs leading-none rounded',
                     // Light tinted highlight for the selected row instead of daisyUI's
                     // `active` (which fills it with the dark neutral colour → in light
                     // mode the row goes dark and the ✕ is hard to see).
@@ -138,22 +141,32 @@ export default function FilePane() {
                     hasError ? 'text-error hover:text-error' : '',
                   ].join(' ')}
                 >
-                  <span className="flex-1 min-w-0">
-                    <span className="block truncate">{f}</span>
-                    {isActive && sessionId && !isLoading && (
-                      <span className="block truncate text-[10px] font-mono text-base-content/50">#{sessionId.slice(0, 6)}</span>
-                    )}
-                  </span>
-                  {isLoading && <span className="loading loading-dots loading-xs shrink-0" />}
-                  {hasError && !isLoading && (
-                    <span className="shrink-0 text-error" title={fileErrors[f]}>⚠</span>
-                  )}
                   <button
+                    type="button"
+                    className="flex flex-1 min-w-0 items-center gap-1 py-1.5 text-left"
+                    onClick={() => handleSelect(f)}
+                    disabled={isBusy}
+                    aria-current={isActive ? 'page' : undefined}
+                  >
+                    <span className="flex-1 min-w-0">
+                      <span className="block truncate">{f}</span>
+                      {isActive && sessionId && !isLoading && (
+                        <span className="block truncate text-[10px] font-mono text-base-content/50">#{sessionId.slice(0, 6)}</span>
+                      )}
+                    </span>
+                    {isLoading && <span className="loading loading-dots loading-xs shrink-0" aria-label="Loading" />}
+                    {hasError && !isLoading && (
+                      <span className="shrink-0 text-error" title={fileErrors[f]} aria-label="Failed to load">⚠</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     className="shrink-0 px-1 text-base-content/40 hover:text-error"
                     onClick={e => closeFile(e, f)}
                     title="Close file"
+                    aria-label={`Close ${f}`}
                   >✕</button>
-                </a>
+                </div>
               </li>
             )
           })}

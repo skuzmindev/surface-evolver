@@ -28,6 +28,28 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
   const [uploadErr, setUploadErr] = useState<string | null>(null)
   const [dragging,  setDragging]  = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const dialogRef    = useRef<HTMLDivElement>(null)
+
+  // Keyboard behaviour of a modal dialog (#25): focus moves into it on open
+  // and back to whatever opened it on close, Escape closes it, and Tab cycles
+  // inside instead of wandering into the app behind the backdrop.
+  useEffect(() => {
+    if (!open) return
+    const opener = document.activeElement as HTMLElement | null
+    dialogRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+      if (e.key !== 'Tab' || !dialogRef.current) return
+      const items = dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled])')
+      if (items.length === 0) return
+      const first = items[0], last = items[items.length - 1]
+      const at = document.activeElement
+      if (e.shiftKey && (at === first || at === dialogRef.current)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey); opener?.focus() }
+  }, [open, onClose])
 
   const refreshFiles = useCallback(async () => {
     setLoading(true)
@@ -68,15 +90,20 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
 
       {/* dialog */}
       <div
-        className={`relative z-10 flex flex-col w-[28rem] max-w-[90vw] max-h-[80vh] rounded-box border border-base-300 bg-base-100 shadow-2xl overflow-hidden ${dragging ? 'ring-2 ring-inset ring-primary' : ''}`}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="file-browser-title"
+        tabIndex={-1}
+        className={`relative z-10 flex flex-col w-[28rem] max-w-[90vw] max-h-[80vh] rounded-box border border-base-300 bg-base-100 shadow-2xl overflow-hidden outline-none ${dragging ? 'ring-2 ring-inset ring-primary' : ''}`}
         onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files) }}
         onDragOver={e => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
       >
         {/* header */}
         <div className="flex items-center justify-between px-4 h-11 shrink-0 border-b border-base-300 bg-base-200">
-          <span className="text-sm font-semibold">Open .fe file</span>
-          <button className="btn btn-ghost btn-xs btn-square" onClick={onClose} title="Close">✕</button>
+          <span id="file-browser-title" className="text-sm font-semibold">Open .fe file</span>
+          <button type="button" className="btn btn-ghost btn-xs btn-square" onClick={onClose} title="Close" aria-label="Close">✕</button>
         </div>
 
         {/* library list */}
@@ -92,13 +119,14 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
           <ul className="menu menu-sm w-full py-1 px-1 gap-0.5">
             {files.map(f => (
               <li key={f}>
-                <a
-                  className="flex items-center gap-1 py-1.5 font-mono text-xs leading-none rounded"
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1 py-1.5 text-left font-mono text-xs leading-none rounded"
                   onClick={() => { onPick(f); onClose() }}
                   title={f}
                 >
                   <span className="truncate flex-1 min-w-0">{f}</span>
-                </a>
+                </button>
               </li>
             ))}
           </ul>
@@ -110,6 +138,7 @@ export default function FileBrowserModal({ open, onClose, onPick }: {
             <p className="text-[11px] text-error leading-tight break-words" title={uploadErr}>{uploadErr}</p>
           )}
           <button
+            type="button"
             className={`btn btn-sm btn-block btn-ghost border border-base-300 normal-case text-xs font-normal ${uploading ? 'loading' : ''}`}
             onClick={() => !uploading && fileInputRef.current?.click()}
             disabled={uploading}
